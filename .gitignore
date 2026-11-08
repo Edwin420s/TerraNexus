@@ -14,4 +14,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+.coverage
+.coverage.*
+*.log
 
