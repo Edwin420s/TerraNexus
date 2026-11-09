@@ -1,0 +1,1 @@
+{"conflicts": [{"entity": "task", "strategy": "server_wins"}, {"entity": "observation", "strategy": "merge_union"}]}
