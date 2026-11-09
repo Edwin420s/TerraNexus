@@ -1,0 +1,28 @@
+{
+  "model_name": "qvac-agronomist-7b",
+  "version": "1.0.0",
+  "architecture": "Transformer-Decoder-Quantized",
+  "quantization": "Q4_K_M (4-bit Medium GGUF)",
+  "parameter_count": "7.24B",
+  "context_window_tokens": 4096,
+  "primary_domain": "Agronomic Soil-Plant-Atmosphere Continuum & FAO-56 Irrigation Planning",
+  "supported_tasks": [
+    "root_zone_depletion_calculation",
+    "fao56_evapotranspiration_reasoning",
+    "irrigation_run_duration_estimation",
+    "canopy_stress_and_disease_scouting_analysis",
+    "local_hardware_actuation_recommendation"
+  ],
+  "hardware_requirements": {
+    "minimum_ram_mb": 4096,
+    "recommended_ram_mb": 8192,
+    "compute_device": "CPU / Edge NPU (AVX2 / ARM NEON)",
+    "offline_capable": true,
+    "internet_required": false
+  },
+  "safety_alignment": {
+    "independent_safety_boundary": true,
+    "max_continuous_run_seconds": 1800,
+    "emergency_stop_awareness": true
+  }
+}
