@@ -183,6 +183,27 @@ def run_e2e_verification():
     status_res = client.get("/api/v1/admin/system-status", headers=headers)
     check("22. Admin Infrastructure Diagnostics", status_res.status_code == 200 and status_res.json().get("status") == "healthy")
 
+    # 12. Tether QVAC Private Documents & Speech AI
+    doc_res = client.post("/api/v1/intelligence/documents/query", headers=headers, json={
+        "query": "maize root zone and depletion"
+    })
+    check("23. QVAC Private Document Vector Search (qvac-fabric-llm.cpp)", doc_res.status_code == 200 and len(doc_res.json()) > 0)
+
+    speech_res = client.post("/api/v1/intelligence/speech/synthesize", headers=headers, json={
+        "text": "E2E verification active. Soil moisture within safe range."
+    })
+    check("24. QVAC On-Device Speech Synthesis (qvac-fabric-speech.cpp)", speech_res.status_code == 200 and len(speech_res.json().get("audio_base64", "")) > 0)
+
+    # 13. Tether WDK Agentic Finance & Human Approval Gate
+    wallet_res = client.get("/api/v1/finance/wallet", headers=headers)
+    wallet_data = wallet_res.json()
+    wallet_ok = (
+        wallet_res.status_code == 200 and
+        wallet_data.get("currency") == "USD₮" and
+        wallet_data.get("security", {}).get("human_approval_enforced") is True
+    )
+    check("25. Tether WDK Self-Custodial USD₮ Vault & Human Approval Gate", wallet_ok)
+
     print("=" * 70)
     print(f"VERIFICATION SUMMARY: {len(passed_checks)} PASSED, {len(failed_checks)} FAILED")
     print("=" * 70)
