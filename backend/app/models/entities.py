@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, String, Text, Boolean, Integer, Numeric, 
+    Column, String, Text, Boolean, Integer, Numeric, Float,
     DateTime, ForeignKey, JSON
 )
 from sqlalchemy.orm import relationship
@@ -648,4 +648,42 @@ class AuditLog(Base):
     resource_id = Column(String(100), nullable=True)
     changes = Column(JSON, default=dict)
     status = Column(String(20), default="success", nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+# ----------------- Private Documents (Local RAG) -----------------
+class FarmDocument(Base):
+    __tablename__ = "farm_documents"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organisation_id = Column(String(36), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False)
+    farm_id = Column(String(36), ForeignKey("farms.id", ondelete="CASCADE"), nullable=True)
+    title = Column(String(200), nullable=False)
+    category = Column(String(50), nullable=False) # fao56_manual, agronomy_guide, soil_report, field_inspection
+    doc_format = Column(String(20), default="markdown", nullable=False)
+    content_text = Column(Text, nullable=False)
+    chunks_count = Column(Integer, default=1, nullable=False)
+    embeddings_metadata = Column(JSON, default=dict)
+    is_indexed = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+# ----------------- Tether WDK Agentic Finance -----------------
+class AgentPayment(Base):
+    __tablename__ = "agent_payments"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organisation_id = Column(String(36), ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False)
+    farm_id = Column(String(36), ForeignKey("farms.id", ondelete="CASCADE"), nullable=True)
+    wallet_address = Column(String(64), nullable=False)
+    recipient_address = Column(String(64), nullable=False)
+    amount_usdt = Column(Float, nullable=False)
+    currency = Column(String(10), default="USD₮", nullable=False)
+    chain = Column(String(30), default="Polygon", nullable=False)
+    purpose = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    agent_reasoning = Column(Text, nullable=True)
+    status = Column(String(30), default="pending_approval", nullable=False) # pending_approval, approved, rejected, broadcasted
+    requires_human_approval = Column(Boolean, default=True, nullable=False)
+    approved_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    transaction_hash = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)

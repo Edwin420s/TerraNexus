@@ -6,7 +6,7 @@ from app.models.entities import (
     Crop, CropVariety, Device, Sensor, Measurement,
     WaterSource, Pump, IrrigationZone, Task, Equipment,
     InventoryItem, AlertRule, Alert, IntelligenceModel,
-    Recommendation, RecommendationEvidence
+    Recommendation, RecommendationEvidence, FarmDocument, AgentPayment
 )
 
 def init_database():
@@ -299,6 +299,62 @@ def init_database():
             )
             db.add(rec_ev)
 
+            db.commit()
+
+        # Ensure seed farm documents exist
+        if not db.query(FarmDocument).first():
+            org = db.query(Organisation).first()
+            farm = db.query(Farm).first()
+            org_id = org.id if org else "a0000000-0000-0000-0000-000000000001"
+            farm_id = farm.id if farm else "c0000000-0000-0000-0000-000000000001"
+            doc = FarmDocument(
+                organisation_id=org_id,
+                farm_id=farm_id,
+                title="FAO-56 Crop Evapotranspiration & Root Zone Depletion Reference Manual",
+                category="fao56_manual",
+                doc_format="markdown",
+                content_text=(
+                    "# FAO-56 Crop Evapotranspiration Guidelines\n\n"
+                    "## 1. Maize (Zea mays)\n"
+                    "Root depth: 0.8 - 1.2 m. Crop coefficient Kc: Initial = 0.40, Mid-season = 1.20, Late season = 0.60. "
+                    "Management Allowed Depletion (MAD): 0.50. Soil water depletion exceeding 50% of available water capacity (AWC) "
+                    "induces stomatal closure and yield penalty.\n\n"
+                    "## 2. Tomato (Solanum lycopersicum)\n"
+                    "Root depth: 0.6 - 1.0 m. Crop coefficient Kc: Initial = 0.45, Mid-season = 1.15, Late season = 0.70. "
+                    "Management Allowed Depletion (MAD): 0.40. Critical watering stages occur during flowering and fruit setting. "
+                    "Inadequate soil moisture during fruit development causes blossom-end rot.\n\n"
+                    "## 3. Soil Water Balance Equation\n"
+                    "Dr,i = Dr,i-1 - (P - RO) - I - CR + ETc + DP\n"
+                    "Where Dr is root zone depletion, P is precipitation, I is irrigation depth, ETc is crop evapotranspiration."
+                ),
+                chunks_count=3,
+                embeddings_metadata={"engine": "qvac-fabric-llm", "chunks": 3},
+                is_indexed=True
+            )
+            db.add(doc)
+            db.commit()
+
+        # Ensure seed agent payments exist
+        if not db.query(AgentPayment).first():
+            org = db.query(Organisation).first()
+            farm = db.query(Farm).first()
+            org_id = org.id if org else "a0000000-0000-0000-0000-000000000001"
+            farm_id = farm.id if farm else "c0000000-0000-0000-0000-000000000001"
+            payment = AgentPayment(
+                organisation_id=org_id,
+                farm_id=farm_id,
+                wallet_address="0x71C...TetherFarmVault",
+                recipient_address="0x89A...AgriSuppliesKenya",
+                amount_usdt=145.50,
+                currency="USD₮",
+                chain="Polygon",
+                purpose="automated_drip_filter_procurement",
+                description="Procurement of secondary 120-mesh disc filter cartridges following differential pressure sensor alert.",
+                agent_reasoning="Filter differential pressure exceeded 0.8 bar. Autonomous inventory agent recommends immediate procurement to prevent dripline clogging.",
+                status="pending_approval",
+                requires_human_approval=True
+            )
+            db.add(payment)
             db.commit()
     except Exception as e:
         db.rollback()
