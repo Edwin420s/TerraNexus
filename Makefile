@@ -1,4 +1,4 @@
-.PHONY: up down logs test build-frontend test-all dev-api dev-frontend test-qa qa-load verify qa-all
+.PHONY: up down logs test build-frontend test-all dev-api dev-frontend test-qa qa-load verify qa-all run-qvac
 
 up:
 	docker compose -f infrastructure/compose.yaml up --build
@@ -8,6 +8,9 @@ down:
 
 logs:
 	docker compose -f infrastructure/compose.yaml logs -f
+
+run-qvac:
+	python3 scripts/run_qvac_server.py --port 8080
 
 test:
 	cd backend && python3 -m pytest tests -v
