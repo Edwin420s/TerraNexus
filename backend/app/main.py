@@ -21,6 +21,7 @@ from app.modules.sync.router import router as sync_router
 from app.modules.integrations.router import router as integrations_router
 from app.modules.reporting.router import router as reporting_router
 from app.modules.admin.router import router as admin_router
+from app.modules.finance.router import router as finance_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -60,6 +61,7 @@ app.include_router(sync_router, prefix=settings.api_v1_prefix)
 app.include_router(integrations_router, prefix=settings.api_v1_prefix)
 app.include_router(reporting_router, prefix=settings.api_v1_prefix)
 app.include_router(admin_router, prefix=settings.api_v1_prefix)
+app.include_router(finance_router, prefix=settings.api_v1_prefix)
 
 @app.get("/health/live", tags=["health"])
 async def liveness():
