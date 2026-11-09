@@ -1,4 +1,4 @@
-.PHONY: up down logs test build-frontend test-all dev-api dev-frontend
+.PHONY: up down logs test build-frontend test-all dev-api dev-frontend test-qa qa-load verify qa-all
 
 up:
 	docker compose -f infrastructure/compose.yaml up --build
@@ -12,6 +12,15 @@ logs:
 test:
 	cd backend && python3 -m pytest tests -v
 
+test-qa:
+	cd backend && python3 -m pytest tests -v --cov=app --cov-report=term-missing
+
+qa-load:
+	python3 scripts/qa_load_test.py
+
+verify:
+	python3 scripts/verify_e2e.py
+
 build-frontend:
 	cd frontend && npm run build
 
@@ -23,3 +32,8 @@ dev-frontend:
 
 test-all: test build-frontend
 	@echo "All TerraNexus test suites and frontend builds passed successfully!"
+
+qa-all: test-qa qa-load build-frontend verify
+	@echo "======================================================================"
+	@echo "TERRANEXUS QA SUITE: ALL TESTS, BENCHMARKS & BUILDS 100% VERIFIED!"
+	@echo "======================================================================"
