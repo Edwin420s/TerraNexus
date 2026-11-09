@@ -89,6 +89,52 @@ export const api = {
   runLocalReasoning: (prompt: string) =>
     fetchWithAuth('/intelligence/local-reasoning', { method: 'POST', body: JSON.stringify({ prompt }) }),
 
+  // QVAC Private Documents (Local RAG)
+  getDocuments: (farmId?: string, category?: string) => {
+    const params = new URLSearchParams();
+    if (farmId) params.append('farm_id', farmId);
+    if (category) params.append('category', category);
+    const qs = params.toString();
+    return fetchWithAuth(`/intelligence/documents${qs ? `?${qs}` : ''}`);
+  },
+  indexDocument: (data: { title: string; category?: string; content_text: string; farm_id?: string }) =>
+    fetchWithAuth('/intelligence/documents/index', { method: 'POST', body: JSON.stringify(data) }),
+  queryDocuments: (query: string, farmId?: string, topK: number = 3) =>
+    fetchWithAuth('/intelligence/documents/query', { method: 'POST', body: JSON.stringify({ query, farm_id: farmId, top_k: topK }) }),
+  chatDocuments: (prompt: string, farmId?: string) =>
+    fetchWithAuth('/intelligence/chat-documents', { method: 'POST', body: JSON.stringify({ prompt, farm_id: farmId }) }),
+
+  // QVAC Speech AI (Whisper ASR & TTS)
+  transcribeSpeech: (data: { audio_base64?: string; filename?: string }) =>
+    fetchWithAuth('/intelligence/speech/transcribe', { method: 'POST', body: JSON.stringify(data) }),
+  synthesizeSpeech: (text: string, voice: string = 'agronomist_female') =>
+    fetchWithAuth('/intelligence/speech/synthesize', { method: 'POST', body: JSON.stringify({ text, voice }) }),
+  voiceAssistant: (data: { audio_base64?: string; transcript_override?: string; voice?: string }) =>
+    fetchWithAuth('/intelligence/voice-assistant', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Tether WDK Agentic Finance (USD₮ Self-Custodial Vault & Human Gates)
+  getFinanceWallet: () => fetchWithAuth('/finance/wallet'),
+  getFinancePayments: (farmId?: string, statusFilter?: string) => {
+    const params = new URLSearchParams();
+    if (farmId) params.append('farm_id', farmId);
+    if (statusFilter) params.append('status_filter', statusFilter);
+    const qs = params.toString();
+    return fetchWithAuth(`/finance/payments${qs ? `?${qs}` : ''}`);
+  },
+  prepareFinancePayment: (data: {
+    purpose: string;
+    amount_usdt: number;
+    recipient_address: string;
+    description?: string;
+    agent_reasoning?: string;
+    chain?: string;
+    farm_id?: string;
+  }) => fetchWithAuth('/finance/payments/prepare', { method: 'POST', body: JSON.stringify(data) }),
+  approveFinancePayment: (paymentId: string) =>
+    fetchWithAuth(`/finance/payments/${paymentId}/approve`, { method: 'POST' }),
+  rejectFinancePayment: (paymentId: string, reason?: string) =>
+    fetchWithAuth(`/finance/payments/${paymentId}/reject`, { method: 'POST', body: JSON.stringify({ reason: reason || 'Operator declined' }) }),
+
   // Admin & System
   getSystemStatus: () => fetchWithAuth('/admin/system-status'),
   getAuditLogs: () => fetchWithAuth('/admin/audit'),
