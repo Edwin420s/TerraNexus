@@ -50,7 +50,16 @@ The independent physical safety boundary was exhaustively validated:
 
 ---
 
-## 4. Defect Log & Resolution Status
+## 4. Local Hardware AI & QVAC Offline Inference
+
+1. **Standalone QVAC Model Server**: Launched via `python3 scripts/run_qvac_server.py --port 8080` (or `make run-qvac`).
+2. **Wi-Fi Severance Verification**: Executed with external network disconnected.
+3. **Execution Mode**: Confirmed returning `execution_mode: "qvac_local_hardware"`.
+4. **Dynamic Reasoning**: Validated dynamic calculation of root zone depletion percentage, soil hydraulic boundaries (PWP/FC), and actionable FAO-56 irrigation run durations.
+
+---
+
+## 5. Defect Log & Resolution Status
 
 | Defect ID | Severity | Module | Description | Resolution | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -58,12 +67,13 @@ The independent physical safety boundary was exhaustively validated:
 | **DEF-002** | S2 | `sync` | Missing `SyncConflict` model import in entities | Model registered and mapped in SQLAlchemy | **VERIFIED FIXED** |
 | **DEF-003** | S2 | `irrigation` | Missing `pump` relationship on `IrrigationZone` | Added bidirectional relationship | **VERIFIED FIXED** |
 | **DEF-004** | S3 | `frontend` | Page navigation search debounce | Implemented 150ms debounce handler | **VERIFIED FIXED** |
+| **DEF-005** | S2 | `intelligence`| Model route returning fixed fallback on unavailable daemon | Embedded QVAC local hardware engine with `qvac_local_hardware` execution mode | **VERIFIED FIXED** |
 
 **Open Defects**: **0** (Zero open S1, S2, S3, or S4 defects).
 
 ---
 
-## 5. Formal QA Sign-Off
+## 6. Formal QA Sign-Off
 
 > **QA CERTIFICATION**:  
 > I hereby certify that the TerraNexus platform has been subjected to rigorous end-to-end quality assurance, functional testing, physical safety verification, security penetration assessment, offline sync validation, and performance load profiling.  

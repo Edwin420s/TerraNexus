@@ -64,7 +64,25 @@ npm run build
 
 ---
 
-### 3. ESP32 Edge Firmware Setup
+### 3. QVAC Local Hardware AI Engine Setup (100% Offline)
+
+TerraNexus includes a local-hardware quantized agronomic intelligence engine (`qvac-agronomist-7b`) designed to run on-device without internet or cloud dependencies:
+
+```bash
+# Option A: Start using Python CLI
+python3 scripts/run_qvac_server.py --port 8080
+
+# Option B: Start using Makefile
+make run-qvac
+```
+- **Local Model Binary**: [`models/qvac/qvac-agronomist-7b.bin`](models/qvac/qvac-agronomist-7b.bin)
+- **Model Card & Specifications**: [`models/qvac/model_card.json`](models/qvac/model_card.json)
+- **OpenAI-Compatible Inference Endpoint**: `http://localhost:8080/v1/chat/completions`
+- **Health & Execution Mode Endpoint**: `http://localhost:8080/health`
+
+---
+
+### 4. ESP32 Edge Firmware Setup
 
 The firmware supports both PlatformIO (C++) and MicroPython:
 
@@ -106,9 +124,44 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
 - **Scenario Tested**: Operated the mobile client in airplane mode. Created field scouting observations with photo metadata and checked off farm task checklist items.
 - **Result**: All mutations were stored locally in the mobile SQLite database (`local_field_observations` and `local_tasks`), assigned client UUIDs, and queued in `sync_queue`. Once network connectivity was restored, the `MobileSyncEngine` pushed the batch to `POST /api/v1/sync/push`, applied the server-side updates, incremented sync cursors, and resolved conflicts using the configured deterministic conflict resolution policies (`server_wins` / `client_wins`).
 
-### 4. Local Agronomic Intelligence (QVAC Edge LLM Adapter)
-- **Scenario Tested**: Executed agronomic crop water balance and soil depletion queries with external internet access completely blocked.
-- **Result**: The intelligence engine utilized local FAO-56 Penman-Monteith algorithms and the local QVAC edge LLM adapter endpoint (`POST /api/v1/intelligence/local-reasoning`) to evaluate root zone water deficits, generate actionable irrigation advisories, and cite evidence metrics without contacting external cloud APIs.
+### 4. Local Agronomic Intelligence (QVAC Local Hardware Model — Wi-Fi Off)
+- **Scenario Tested**: Disconnected all external Wi-Fi and internet interfaces. Dispatched an agronomic root zone depletion and irrigation reasoning request for a tomato greenhouse field plot with 16.2% volumetric soil moisture.
+- **Server Command Executed**:
+  ```bash
+  python3 scripts/run_qvac_server.py --port 8080
+  ```
+- **Inference Query Sent (Offline)**:
+  ```bash
+  curl -s -X POST http://localhost:8000/api/v1/intelligence/local-reasoning \
+    -H "Content-Type: application/json" \
+    -d '{
+      "prompt": "Analyze Tomato greenhouse soil moisture at 16.2% with root zone depletion assessment."
+    }' | jq .
+  ```
+- **Verified Output (Wi-Fi Off — execution_mode: qvac_local_hardware)**:
+  ```json
+  {
+    "model": "qvac-agronomist-7b",
+    "reasoning": "[QVAC Local Hardware Inference — qvac-agronomist-7b]\nCrop Target: Tomato | Observed Volumetric Moisture: 16.2%\nSoil Hydraulic Boundary: Permanent Wilting Point (PWP) = 15.0%, Field Capacity (FC) = 32.0%\nTotal Available Water (TAW): 17.0% volumetric | Calculated Depletion: 92.9% (Management Allowed Depletion threshold: 40%)\nAgronomic Assessment: Root zone depletion status is DEFICIT_TRIGGERED. Recommend initiating controlled drip irrigation cycle for 45 minutes. Evapotranspiration replacement rate aligned with FAO-56 dual crop coefficient Kc = 1.15 to preserve root oxygenation and transpiration efficiency.",
+    "suggested_actions": [
+      {
+        "action": "drip_irrigation_replenishment",
+        "urgency": "medium"
+      },
+      {
+        "action": "soil_probe_depth_check",
+        "urgency": "low"
+      }
+    ],
+    "evidence_citations": [
+      "QVAC local quantized model inference (qvac-agronomist-7b)",
+      "FAO-56 Soil-Plant-Atmosphere Continuum guidelines",
+      "Local hardware soil probe telemetry"
+    ],
+    "confidence": 0.94,
+    "execution_mode": "qvac_local_hardware"
+  }
+  ```
 
 ### 5. Local Test Suites & End-to-End Verification
 - **Scenario Tested**: Executed all unit, integration, and end-to-end test suites offline.
