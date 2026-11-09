@@ -43,7 +43,7 @@ def test_tc_intel_003_recommendation_rejection():
     assert reject_resp.json()["status"] == "ok"
 
 def test_tc_intel_004_local_qvac_reasoning_offline_fallback():
-    """Verify local offline reasoning engine adapter returns agronomic guidance."""
+    """Verify local offline reasoning engine adapter returns agronomic guidance in qvac_local_hardware mode."""
     req_payload = {
         "prompt": "Evaluate irrigation necessity for maize at mid season given 18% soil moisture.",
         "context_data": {
@@ -51,11 +51,25 @@ def test_tc_intel_004_local_qvac_reasoning_offline_fallback():
             "growth_stage": "mid_season",
             "soil_moisture_pct": 18.2
         },
-        "model_name": "qvac_local_agronomist"
+        "model_name": "qvac-agronomist-7b"
     }
     resp = client.post("/api/v1/intelligence/local-reasoning", json=req_payload)
     assert resp.status_code == 200
     data = resp.json()
     assert "reasoning" in data
     assert "suggested_actions" in data
-    assert "execution_mode" in data
+    assert data["model"] == "qvac-agronomist-7b"
+    assert data["execution_mode"] == "qvac_local_hardware"
+    assert "Maize" in data["reasoning"]
+
+def test_tc_intel_005_wifi_off_offline_hardware_reasoning():
+    """Verify 100% offline local hardware execution when all external network is severed."""
+    req_payload = {
+        "prompt": "Evaluate Tomato greenhouse soil moisture at 16.2% with root zone depletion assessment."
+    }
+    resp = client.post("/api/v1/intelligence/local-reasoning", json=req_payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["execution_mode"] == "qvac_local_hardware"
+    assert "Tomato" in data["reasoning"]
+    assert "DEFICIT_TRIGGERED" in data["reasoning"]

@@ -143,7 +143,7 @@ def run_e2e_verification():
     reasoning_res = client.post("/api/v1/intelligence/local-reasoning", headers=headers, json={
         "prompt": "Evaluate soil moisture deficit for drip tomatoes."
     })
-    check("17. QVAC Local Reasoning Engine", reasoning_res.status_code == 200 and "reasoning" in reasoning_res.json())
+    check("17. QVAC Local Reasoning Engine", reasoning_res.status_code == 200 and reasoning_res.json().get("execution_mode") == "qvac_local_hardware")
 
     # 10. Offline-First Synchronization Protocol (TNX-SYNC-001)
     client_uuid = f"mobile-tester-{uuid.uuid4().hex[:6]}"
