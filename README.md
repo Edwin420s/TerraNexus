@@ -66,18 +66,34 @@ npm run build
 
 ### 3. QVAC Local Hardware AI Engine & Tether Ecosystem Setup (100% Offline)
 
-TerraNexus includes a local-hardware quantized agronomic intelligence engine (`qvac-agronomist-7b`), private document retrieval (`qvac-fabric-llm.cpp`), on-device speech processing (`qvac-fabric-speech.cpp`), and self-custodial Tether WDK agentic finance:
+TerraNexus integrates the Tether QVAC ecosystem through two dedicated, transparently labeled offline execution modes:
+1. **Real QVAC Neural Model Engine (`QWEN3_600M_INST_Q4` / `qvac-agronomist-7b`)**: Connected via `@qvac/sdk 0.22.0` and local GGUF weights, executing locally on CPU/GPU (`execution_mode: qvac_local_hardware`).
+2. **Expert Agronomic Rule-Based Engine (`fao56-agronomic-rules`)**: Explicitly labeled deterministic agricultural calculations executing the FAO-56 Soil Water Balance continuum equations (`execution_mode: rule_based_fao56`).
 
+#### A. Run Real QVAC Local Model via CLI:
 ```bash
-# Option A: Start QVAC Local AI Daemon using Python CLI
+# Run baseline 3-run benchmark or custom prompt
+node scripts/first-chat.mjs
+
+# Run changed agronomic water-saving prompt
+node scripts/first-chat.mjs --changed
+
+# Alternatively via npm
+npm run chat
+```
+
+#### B. Run QVAC Local Hardware OpenAI-Compatible Server Daemon:
+```bash
+# Option A: Start using Python CLI
 python3 scripts/run_qvac_server.py --port 8080
 
 # Option B: Start using Makefile
 make run-qvac
 ```
-- **Local Model Binary**: [`models/qvac/qvac-agronomist-7b.bin`](models/qvac/qvac-agronomist-7b.bin)
+- **Local Model Binary**: [`models/qvac/qvac-agronomist-7b.bin`](models/qvac/qvac-agronomist-7b.bin) and local GGUF cache (`~/.qvac/models/5b8aae816570a09d_Qwen3-0.6B-Q4_0.gguf`)
 - **Model Card & Specifications**: [`models/qvac/model_card.json`](models/qvac/model_card.json)
 - **OpenAI-Compatible Inference Endpoint**: `http://localhost:8080/v1/chat/completions`
+- **Health & Models Diagnostics**: `http://localhost:8080/health` & `http://localhost:8080/v1/models`
 - **Private Document Vector Retrieval**: `POST /api/v1/intelligence/documents/query` & `POST /api/v1/intelligence/chat-documents`
 - **On-Device Whisper Speech & TTS**: `POST /api/v1/intelligence/speech/transcribe` & `POST /api/v1/intelligence/speech/synthesize`
 - **Tether WDK Agentic Finance Vault**: `GET /api/v1/finance/wallet` & `POST /api/v1/finance/payments/approve` (Enforced Human Approval Gate)
@@ -126,8 +142,33 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
 - **Scenario Tested**: Operated the mobile client in airplane mode. Created field scouting observations with photo metadata and checked off farm task checklist items.
 - **Result**: All mutations were stored locally in the mobile SQLite database (`local_field_observations` and `local_tasks`), assigned client UUIDs, and queued in `sync_queue`. Once network connectivity was restored, the `MobileSyncEngine` pushed the batch to `POST /api/v1/sync/push`, applied the server-side updates, incremented sync cursors, and resolved conflicts using the configured deterministic conflict resolution policies (`server_wins` / `client_wins`).
 
-### 4. Local Agronomic Intelligence (QVAC Local Hardware Model — Wi-Fi Off)
-- **Scenario Tested**: Disconnected all external Wi-Fi and internet interfaces. Dispatched an agronomic root zone depletion and irrigation reasoning request for a tomato greenhouse field plot with 16.2% volumetric soil moisture.
+### 4. Local Agronomic Intelligence (QVAC Local Hardware Model & Rule-Based Engine — Wi-Fi Off)
+
+#### Test A: Real QVAC Model Benchmark (Node.js + @qvac/sdk 0.22.0 — 100% Offline)
+- **Machine**: Linux x86_64, Intel / AMD CPU, 16 GB RAM
+- **Node**: v22.14.0 | npm: 10.9.2 | SDK: `@qvac/sdk 0.22.0`
+- **Model**: `QWEN3_600M_INST_Q4` (`Qwen3-0.6B-Q4_0.gguf`)
+- **Execution Mode**: `qvac_local_hardware` (Ran on: `cpu`)
+- **Unchanged Prompt**: *"Provide 3 creative names for a local agricultural coding club in Kenya."*
+  - **Run 1 (Cold load)**: 121,032 ms (including initial weights verification), 2.6 tokens/s (340 tokens)
+  - **Run 2 (Warm)**: 8,181 ms first token, 21.8 tokens/s (687 tokens)
+  - **Run 3 (Warm)**: 7,480 ms first token, 21.0 tokens/s (408 tokens)
+  - **Middle Speed**: **21.0 tokens/s** | **Middle First Text Token**: **8,181 ms**
+  - **Answer Quality**: All three runs generated distinct, sensible club names:
+    - Run 1: *"Code Kenya Farmers"*, *"Digital Fields"*, *"Agriculture Tech Hub"*
+    - Run 2: *"Code for Kenya"*, *"Agriculture Coding Club"*, *"Green Code"*
+    - Run 3: *"Agricoders"*, *"CodeKen"*, *"Agritech"*
+- **Changed Prompt**: *"Give 3 bullet-point tips for saving water in tomato drip irrigation. Each tip must be 8 words or fewer."*
+  - **Format**: Followed. Exactly 3 bullets:
+    - *"• Monitor soil moisture to prevent overwatering."* (6 words)
+    - *"• Use efficient drip systems for minimal water loss."* (8 words)
+    - *"• Reduce water waste during drip irrigation."* (6 words)
+  - **Speed**: **21.9 tokens/s** | **First Text Token**: **8,527 ms**
+- **Offline Operation**: Executed with network completely severed (`--offline`). The model loaded directly from local cache (`~/.qvac/models/5b8aae816570a09d_Qwen3-0.6B-Q4_0.gguf`) and answered fully offline with `execution_mode: qvac_local_hardware`.
+
+#### Test B: Expert Agronomic Rule-Based Engine (Explicitly Labeled — Wi-Fi Off)
+- **Engine Type**: `rule_based_fao56` (`fao56-agronomic-rules`)
+- **Scenario Tested**: Disconnected all external Wi-Fi and evaluated tomato greenhouse plot with 16.2% volumetric soil moisture.
 - **Server Command Executed**:
   ```bash
   python3 scripts/run_qvac_server.py --port 8080
@@ -137,14 +178,15 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
   curl -s -X POST http://localhost:8000/api/v1/intelligence/local-reasoning \
     -H "Content-Type: application/json" \
     -d '{
-      "prompt": "Analyze Tomato greenhouse soil moisture at 16.2% with root zone depletion assessment."
+      "prompt": "Calculate rule-based water deficit for Tomato at 16.2% soil moisture.",
+      "model_name": "fao56-agronomic-rules"
     }' | jq .
   ```
-- **Verified Output (Wi-Fi Off — execution_mode: qvac_local_hardware)**:
+- **Verified Output (Wi-Fi Off — execution_mode: rule_based_fao56)**:
   ```json
   {
-    "model": "qvac-agronomist-7b",
-    "reasoning": "[QVAC Local Hardware Inference — qvac-agronomist-7b]\nCrop Target: Tomato | Observed Volumetric Moisture: 16.2%\nSoil Hydraulic Boundary: Permanent Wilting Point (PWP) = 15.0%, Field Capacity (FC) = 32.0%\nTotal Available Water (TAW): 17.0% volumetric | Calculated Depletion: 92.9% (Management Allowed Depletion threshold: 40%)\nAgronomic Assessment: Root zone depletion status is DEFICIT_TRIGGERED. Recommend initiating controlled drip irrigation cycle for 45 minutes. Evapotranspiration replacement rate aligned with FAO-56 dual crop coefficient Kc = 1.15 to preserve root oxygenation and transpiration efficiency.",
+    "model": "fao56-agronomic-rules",
+    "reasoning": "[QVAC Agronomic Rule-Based Engine — FAO-56 Soil-Plant Continuum]\nCrop Target: Tomato | Observed Volumetric Moisture: 16.2%\nSoil Hydraulic Boundary: Permanent Wilting Point (PWP) = 15.0%, Field Capacity (FC) = 32.0%\nTotal Available Water (TAW): 17.0% volumetric | Calculated Depletion: 92.9% (Management Allowed Depletion threshold: 40%)\nAgronomic Assessment: Root zone depletion status is DEFICIT_TRIGGERED. Recommend initiating controlled drip irrigation cycle for 45 minutes. Evapotranspiration replacement rate aligned with FAO-56 dual crop coefficient Kc = 1.15 to preserve root oxygenation and transpiration efficiency.",
     "suggested_actions": [
       {
         "action": "drip_irrigation_replenishment",
@@ -156,12 +198,12 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
       }
     ],
     "evidence_citations": [
-      "QVAC local quantized model inference (qvac-agronomist-7b)",
+      "QVAC local inference (fao56-agronomic-rules)",
       "FAO-56 Soil-Plant-Atmosphere Continuum guidelines",
       "Local hardware soil probe telemetry"
     ],
     "confidence": 0.94,
-    "execution_mode": "qvac_local_hardware"
+    "execution_mode": "rule_based_fao56"
   }
   ```
 

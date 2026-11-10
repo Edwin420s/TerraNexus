@@ -1,0 +1,16 @@
+{
+  "name": "terranexus",
+  "version": "1.0.0",
+  "description": "TerraNexus Open Agricultural Intelligence & Operations Platform with QVAC Local AI",
+  "type": "module",
+  "scripts": {
+    "chat": "node scripts/first-chat.mjs",
+    "chat:qvac": "node scripts/first-chat.mjs",
+    "chat:rule": "python3 scripts/run_qvac_server.py --mode rule-based",
+    "test": "make test-all",
+    "verify": "python3 scripts/verify_e2e.py"
+  },
+  "dependencies": {
+    "@qvac/sdk": "^0.22.0"
+  }
+}

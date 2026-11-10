@@ -174,20 +174,21 @@ async def local_reasoning(req: LocalReasoningRequest, user: User = Depends(get_c
             if res.status_code == 200:
                 data = res.json()
                 content = data["choices"][0]["message"]["content"]
+                exec_mode = data.get("execution_mode", "qvac_local_hardware")
                 return LocalReasoningResponse(
-                    model="qvac-agronomist-7b",
+                    model=data.get("model", "qvac-agronomist-7b"),
                     reasoning=content,
                     suggested_actions=[
                         {"action": "drip_irrigation_replenishment", "urgency": "medium"},
                         {"action": "soil_probe_depth_check", "urgency": "low"}
                     ],
                     evidence_citations=[
-                        "QVAC local quantized model inference (qvac-agronomist-7b)",
+                        "QVAC local inference (" + data.get("model", "QWEN3_600M_INST_Q4") + ")",
                         "FAO-56 Soil-Plant-Atmosphere Continuum guidelines",
                         "Local hardware soil probe telemetry"
                     ],
                     confidence=0.94,
-                    execution_mode="qvac_local_hardware"
+                    execution_mode=exec_mode
                 )
     except Exception:
         pass
@@ -195,21 +196,24 @@ async def local_reasoning(req: LocalReasoningRequest, user: User = Depends(get_c
     # 2. Execute local embedded QVAC hardware inference engine (100% offline, zero network)
     try:
         from app.services.qvac_server import perform_local_agronomic_inference
-        content = perform_local_agronomic_inference(req.prompt)
+        is_rule = req.model_name in ("fao56-agronomic-rules", "rule-based", "rule_based_fao56")
+        mode = "rule_based" if is_rule else "qvac"
+        content = perform_local_agronomic_inference(req.prompt, mode=mode)
+        exec_mode = "rule_based_fao56" if is_rule else "qvac_local_hardware"
         return LocalReasoningResponse(
-            model="qvac-agronomist-7b",
+            model=req.model_name or "qvac-agronomist-7b",
             reasoning=content,
             suggested_actions=[
                 {"action": "drip_irrigation_replenishment", "urgency": "medium"},
                 {"action": "soil_probe_depth_check", "urgency": "low"}
             ],
             evidence_citations=[
-                "QVAC local quantized model inference (qvac-agronomist-7b)",
+                "QVAC local inference (" + (req.model_name or "qvac-agronomist-7b") + ")",
                 "FAO-56 Soil-Plant-Atmosphere Continuum guidelines",
                 "Local hardware soil probe telemetry"
             ],
             confidence=0.94,
-            execution_mode="qvac_local_hardware"
+            execution_mode=exec_mode
         )
     except Exception:
         pass

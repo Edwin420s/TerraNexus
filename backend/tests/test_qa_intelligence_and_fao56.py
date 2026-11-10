@@ -204,3 +204,17 @@ def test_tc_wdk_008_agentic_finance_human_approval_lifecycle():
     assert rejected_pmt["status"] == "rejected"
     assert "Organic certification" in rejected_pmt["description"]
 
+def test_tc_intel_009_rule_based_fao56_engine_labeling():
+    """Verify explicit labeling of rule-based agronomic engine as rule_based_fao56."""
+    req_payload = {
+        "prompt": "Calculate rule-based water deficit for Tomato at 18.0% soil moisture.",
+        "model_name": "fao56-agronomic-rules"
+    }
+    resp = client.post("/api/v1/intelligence/local-reasoning", json=req_payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["execution_mode"] == "rule_based_fao56"
+    assert "Rule-Based Engine" in data["reasoning"]
+    assert "Tomato" in data["reasoning"]
+
+
