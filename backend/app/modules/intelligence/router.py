@@ -163,12 +163,42 @@ def get_weather(latitude: float = -1.2921, longitude: float = 36.8219):
 
 @router.post("/local-reasoning", response_model=LocalReasoningResponse)
 async def local_reasoning(req: LocalReasoningRequest, user: User = Depends(get_current_active_user)):
-    """QVAC Local AI Agronomic Engine adapter with local hardware reasoning."""
-    # 1. Attempt to query local QVAC daemon on port 8080 if running
+    """
+    QVAC Local AI Agronomic Engine adapter.
+    Strictly separates:
+    1. Real QVAC local neural model execution (qvac_local_hardware)
+    2. Deterministic FAO-56 soil water balance calculation (rule_based_fao56)
+    Propagates 503 error when neural model is unavailable without mock fallbacks.
+    """
+    from app.services.qvac_server import perform_rule_based_agronomic_inference, perform_local_neural_inference
+
+    is_rule_mode = req.model_name in ("fao56-agronomic-rules", "rule-based", "rule_based_fao56")
+
+    # Path 1: Explicit Rule-Based FAO-56 Engine
+    if is_rule_mode:
+        content = perform_rule_based_agronomic_inference(req.prompt)
+        return LocalReasoningResponse(
+            model="fao56-agronomic-rules",
+            reasoning=content,
+            suggested_actions=[
+                {"action": "drip_irrigation_replenishment", "urgency": "medium"},
+                {"action": "soil_probe_depth_check", "urgency": "low"}
+            ],
+            evidence_citations=[
+                "FAO-56 Soil Water Balance Continuum equation",
+                "Root Zone Available Water Capacity (AWC)",
+                "Local hardware soil probe telemetry"
+            ],
+            confidence=1.0,
+            execution_mode="rule_based_fao56"
+        )
+
+    # Path 2: Real QVAC Local Neural Hardware Inference
+    # First, try querying local daemon if running on port 8080
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             res = await client.post("http://127.0.0.1:8080/v1/chat/completions", json={
-                "model": "qvac-agronomist-7b",
+                "model": "QWEN3_600M_INST_Q4",
                 "messages": [{"role": "user", "content": req.prompt}]
             })
             if res.status_code == 200:
@@ -176,69 +206,51 @@ async def local_reasoning(req: LocalReasoningRequest, user: User = Depends(get_c
                 content = data["choices"][0]["message"]["content"]
                 exec_mode = data.get("execution_mode", "qvac_local_hardware")
                 return LocalReasoningResponse(
-                    model=data.get("model", "qvac-agronomist-7b"),
+                    model=data.get("model", "QWEN3_600M_INST_Q4"),
                     reasoning=content,
                     suggested_actions=[
                         {"action": "drip_irrigation_replenishment", "urgency": "medium"},
                         {"action": "soil_probe_depth_check", "urgency": "low"}
                     ],
                     evidence_citations=[
-                        "QVAC local inference (" + data.get("model", "QWEN3_600M_INST_Q4") + ")",
-                        "FAO-56 Soil-Plant-Atmosphere Continuum guidelines",
+                        "QVAC local neural inference (" + data.get("model", "QWEN3_600M_INST_Q4") + ")",
+                        "Real local weights execution via @qvac/sdk",
                         "Local hardware soil probe telemetry"
                     ],
-                    confidence=0.94,
+                    confidence=0.95,
                     execution_mode=exec_mode
                 )
     except Exception:
         pass
 
-    # 2. Execute local embedded QVAC hardware inference engine (100% offline, zero network)
+    # If daemon is not running on 8080, directly invoke local neural runner
     try:
-        from app.services.qvac_server import perform_local_agronomic_inference
-        is_rule = req.model_name in ("fao56-agronomic-rules", "rule-based", "rule_based_fao56")
-        mode = "rule_based" if is_rule else "qvac"
-        content = perform_local_agronomic_inference(req.prompt, mode=mode)
-        exec_mode = "rule_based_fao56" if is_rule else "qvac_local_hardware"
+        result = perform_local_neural_inference(req.prompt)
+        content = result["response_text"]
         return LocalReasoningResponse(
-            model=req.model_name or "qvac-agronomist-7b",
+            model="QWEN3_600M_INST_Q4",
             reasoning=content,
             suggested_actions=[
                 {"action": "drip_irrigation_replenishment", "urgency": "medium"},
                 {"action": "soil_probe_depth_check", "urgency": "low"}
             ],
             evidence_citations=[
-                "QVAC local inference (" + (req.model_name or "qvac-agronomist-7b") + ")",
-                "FAO-56 Soil-Plant-Atmosphere Continuum guidelines",
-                "Local hardware soil probe telemetry"
+                "QVAC local neural inference (QWEN3_600M_INST_Q4)",
+                "On-device llama.cpp completion via @qvac/sdk",
+                f"Measured throughput: {result.get('tokens_per_second', 'N/A')} tok/s"
             ],
-            confidence=0.94,
-            execution_mode=exec_mode
+            confidence=0.95,
+            execution_mode="qvac_local_hardware"
         )
-    except Exception:
-        pass
-
-    # 3. Built-in local agronomic reasoning fallback
-    return LocalReasoningResponse(
-        model=req.model_name or "qvac_local_agronomist_fallback",
-        reasoning=(
-            "Based on the current soil moisture trajectory (depleting from 35% towards 28%) and the "
-            "predicted daily evapotranspiration (ET0 = 4.3mm/day), the tomato crop root zone is entering "
-            "moderate stress. Soil moisture remains above the permanent wilting point (15%) but requires "
-            "timely replenishment to prevent blossom-end rot and maintain optimal photosynthesis."
-        ),
-        suggested_actions=[
-            {"action": "drip_irrigation", "duration_minutes": 45, "zone": "Z-GH1"},
-            {"action": "scout_canopy", "urgency": "low"}
-        ],
-        evidence_citations=[
-            "FAO-56 Penman-Monteith Evapotranspiration Guidelines",
-            "Capacitive Soil Probe Channel 0 (10cm depth)",
-            "Tomato Water Depletion Threshold MAD = 0.50"
-        ],
-        confidence=0.91,
-        execution_mode="edge_local_engine"
-    )
+    except Exception as e:
+        # Strictly propagate failure: DO NOT return rule-based calculations labeled as hardware
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Local QVAC neural model unavailable or failed to execute: {str(e)}. "
+                "To run deterministic calculations, set model_name='fao56-agronomic-rules'."
+            )
+        )
 
 # ----------------- Private Document Search (Local RAG) -----------------
 class DocumentIndexRequest(BaseModel):

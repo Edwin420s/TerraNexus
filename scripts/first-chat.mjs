@@ -1,106 +1,154 @@
 #!/usr/bin/env node
 /**
- * QVAC First Local AI Model Benchmark (Bootcamp Day 1 / Week 1 Reference)
- * Runs QWEN3_600M_INST_Q4 (Qwen3-0.6B-Q4_0.gguf) locally using @qvac/sdk.
- * 100% offline, zero network dependencies.
+ * QVAC Real Local Model Runner & Benchmark
+ * 
+ * Executes QWEN3_600M_INST_Q4 (Qwen3-0.6B-Q4_0.gguf) locally using @qvac/sdk.
+ * Operates 100% offline with zero cloud dependencies and zero mock fallbacks.
+ * 
+ * Rules:
+ * - NO fallback canned responses
+ * - NO simulated or hardcoded latencies
+ * - Any failure (import, weights, loading, generation) immediately stops with exit code 1.
  */
 
 import { performance } from 'node:perf_hooks';
 import process from 'node:process';
+import {
+  getSystemResources,
+  loadModel,
+  unloadModel,
+  completion,
+  QWEN3_600M_INST_Q4
+} from '@qvac/sdk';
 
-async function runBenchmark() {
-  console.log("======================================================================");
-  console.log("QVAC LOCAL HARDWARE AI: FIRST LOCAL MODEL BENCHMARK");
-  console.log("Model: QWEN3_600M_INST_Q4 (Qwen3-0.6B-Q4_0.gguf)");
-  console.log("Runtime: Node.js " + process.version + " | SDK: @qvac/sdk 0.22.0");
-  console.log("Execution Device: CPU (Fallback-safe for mid-range hardware)");
-  console.log("Offline Mode: True (Wi-Fi disconnected)");
-  console.log("======================================================================");
-
-  let sdk;
-  try {
-    sdk = await import('@qvac/sdk');
-  } catch (err) {
-    console.warn("[WARN] @qvac/sdk import warning:", err.message);
-  }
-
-  // Determine prompt from arguments or use standard bootcamp prompts
+async function main() {
   const args = process.argv.slice(2);
   let prompt = "Provide 3 creative names for a local agricultural coding club in Kenya.";
+
   if (args.includes('--changed')) {
     prompt = "Give 3 bullet-point tips for saving water in tomato drip irrigation. Each tip must be 8 words or fewer.";
   } else if (args.length > 0 && !args[0].startsWith('--')) {
     prompt = args[0];
   }
 
-  console.log(`\n[Prompt]: "${prompt}"\n`);
+  console.log("======================================================================");
+  console.log("TERRANEXUS: QVAC LOCAL NEURAL MODEL INFERENCE BENCHMARK");
+  console.log("Runtime Environment:");
+  console.log(`• OS Platform: ${process.platform} (${process.arch})`);
+  console.log(`• Node Version: ${process.version}`);
+  console.log("• Model Descriptor: QWEN3_600M_INST_Q4");
+  console.log(`• Model GGUF Target: ${QWEN3_600M_INST_Q4.modelId}`);
+  console.log(`• Expected File Size: ${QWEN3_600M_INST_Q4.expectedSize} bytes (~364.5 MB)`);
+  console.log(`• Engine Addon: ${QWEN3_600M_INST_Q4.addon} (${QWEN3_600M_INST_Q4.engine})`);
+  console.log("======================================================================\n");
 
-  const startTime = performance.now();
-  let firstTokenTime = 0;
-  let tokensGenerated = 0;
-  let answerText = "";
-
+  // Step 1: System resource discovery
+  let resources;
   try {
-    if (sdk && typeof sdk.loadModel === 'function' && sdk.QWEN3_600M_INST_Q4) {
-      console.log("[1/3] Loading QWEN3_600M_INST_Q4 into memory...");
-      const loadStart = performance.now();
-      const modelId = await sdk.loadModel({
-        modelSrc: sdk.QWEN3_600M_INST_Q4,
-        modelConfig: { ctx_size: 2048, device: 'cpu' }
-      });
-      console.log(`[2/3] Model loaded successfully in ${(performance.now() - loadStart).toFixed(0)} ms (ID: ${modelId})`);
-
-      console.log("[3/3] Generating completion stream...");
-      const run = sdk.completion({
-        modelId,
-        history: [{ role: 'user', content: prompt }],
-        stream: true
-      });
-
-      for await (const event of run.events) {
-        if (event.type === 'contentDelta' && event.text) {
-          if (firstTokenTime === 0) {
-            firstTokenTime = performance.now() - startTime;
-          }
-          process.stdout.write(event.text);
-          answerText += event.text;
-          tokensGenerated++;
-        }
-      }
-    } else {
-      throw new Error("SDK worker unavailable in this shell context, using verified hardware benchmark metrics.");
-    }
+    resources = await getSystemResources({ sample: false });
+    const ramBytes = resources.capabilities.memory?.totalBytes?.value;
+    const ramGb = ramBytes ? (ramBytes / (1024 ** 3)).toFixed(2) + " GB" : "N/A";
+    const cpuModel = resources.capabilities.cpu?.model?.value || "x86_64 CPU";
+    console.log(`[Host Hardware] CPU: ${cpuModel} | RAM: ${ramGb}`);
   } catch (err) {
-    // Graceful offline fallback with verified local hardware execution metrics
-    firstTokenTime = 185; // ms (typical CPU first token)
-    if (prompt.includes("water") || prompt.includes("tomato") || prompt.includes("irrigation")) {
-      answerText = "• Mulch beds to reduce surface evaporation.\n• Irrigate at dawn to minimize transpiration.\n• Monitor tensiometer before opening solenoid valves.";
-      tokensGenerated = 26;
-    } else {
-      answerText = "1. AgroCoders Rift Valley\n2. ShambaBytes Kenya\n3. TerraLogic Hub";
-      tokensGenerated = 22;
-    }
-    console.log(answerText);
+    console.warn(`[WARN] getSystemResources diagnostics note: ${err.message}`);
   }
 
-  const totalTimeSec = (performance.now() - startTime) / 1000;
-  const tokensPerSec = tokensGenerated > 0 ? (tokensGenerated / Math.max(0.1, totalTimeSec)).toFixed(1) : "34.2";
+  // Step 2: Load Model via @qvac/sdk
+  console.log(`\n[1/3] Loading local neural model weights into memory...`);
+  const tLoadStart = performance.now();
+  let modelId;
+  try {
+    modelId = await loadModel({
+      modelSrc: QWEN3_600M_INST_Q4,
+      modelConfig: {
+        ctx_size: 2048,
+        device: 'cpu'
+      },
+      onProgress: (p) => {
+        if (p && p.percentage != null) {
+          process.stdout.write(`\rLoading progress: ${p.percentage}%`);
+        }
+      }
+    });
+  } catch (err) {
+    console.error(`\n❌ FATAL: Failed to load QVAC model into memory: ${err.message}`);
+    console.error(err.stack);
+    process.exit(1);
+  }
 
-  console.log("\n----------------------------------------------------------------------");
-  console.log("BENCHMARK METRICS:");
-  console.log(`• First Text Token Latency: ${firstTokenTime.toFixed(0)} ms`);
-  console.log(`• Generation Speed: ${tokensPerSec} tokens/s`);
-  console.log(`• Tokens Generated: ${tokensGenerated}`);
+  const loadDurationMs = performance.now() - tLoadStart;
+  console.log(`\n[2/3] Model loaded successfully in ${loadDurationMs.toFixed(0)} ms. Local Model ID: ${modelId}`);
+
+  // Step 3: Run Completion Stream
+  console.log(`\n[3/3] Executing on-device neural completion...`);
+  console.log(`Prompt: "${prompt}"\n`);
+  console.log("--- MODEL RESPONSE STREAM START ---");
+
+  const tInferStart = performance.now();
+  let firstTokenMs = 0;
+  let tokenCount = 0;
+  let generatedText = "";
+
+  try {
+    const run = completion({
+      modelId,
+      history: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      stream: true
+    });
+
+    for await (const token of run.tokenStream) {
+      if (tokenCount === 0) {
+        firstTokenMs = performance.now() - tInferStart;
+      }
+      process.stdout.write(token);
+      generatedText += token;
+      tokenCount++;
+    }
+  } catch (err) {
+    console.error(`\n❌ FATAL: Completion generation failed: ${err.message}`);
+    console.error(err.stack);
+    try {
+      await unloadModel({ modelId });
+    } catch (_) {}
+    process.exit(1);
+  }
+
+  const inferDurationSec = (performance.now() - tInferStart) / 1000;
+  const tokensPerSec = tokenCount > 0 && inferDurationSec > 0
+    ? (tokenCount / inferDurationSec).toFixed(2)
+    : "0.00";
+
+  console.log("\n--- MODEL RESPONSE STREAM END ---\n");
+
+  // Step 4: Unload Model to free memory
+  try {
+    await unloadModel({ modelId });
+    console.log(`[Unload] Model ${modelId} successfully unloaded from memory.`);
+  } catch (err) {
+    console.warn(`[WARN] Model unload note: ${err.message}`);
+  }
+
+  // Step 5: Report Truthful Measured Benchmark Metrics
+  console.log("\n======================================================================");
+  console.log("VERIFIED LOCAL MODEL BENCHMARK METRICS (NO SIMULATION / NO FALLBACK):");
+  console.log(`• Model: QWEN3_600M_INST_Q4 (Qwen3-0.6B-Q4_0.gguf)`);
   console.log(`• Execution Mode: qvac_local_hardware`);
-  console.log("----------------------------------------------------------------------\n");
-
-  return {
-    prompt,
-    answer: answerText,
-    firstTextTokenMs: firstTokenTime,
-    tokensPerSecond: parseFloat(tokensPerSec),
-    executionMode: "qvac_local_hardware"
-  };
+  console.log(`• Device: cpu`);
+  console.log(`• Model Load Duration: ${loadDurationMs.toFixed(0)} ms`);
+  console.log(`• First Text Token Latency: ${firstTokenMs.toFixed(1)} ms`);
+  console.log(`• Generation Duration: ${inferDurationSec.toFixed(2)} s`);
+  console.log(`• Total Tokens Generated: ${tokenCount}`);
+  console.log(`• Throughput Speed: ${tokensPerSec} tokens/s`);
+  console.log("======================================================================\n");
 }
 
-runBenchmark();
+main().catch((err) => {
+  console.error("FATAL: Unhandled benchmark exception:", err);
+  process.exit(1);
+});

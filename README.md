@@ -66,36 +66,36 @@ npm run build
 
 ### 3. QVAC Local Hardware AI Engine & Tether Ecosystem Setup (100% Offline)
 
-TerraNexus integrates the Tether QVAC ecosystem through two dedicated, transparently labeled offline execution modes:
-1. **Real QVAC Neural Model Engine (`QWEN3_600M_INST_Q4` / `qvac-agronomist-7b`)**: Connected via `@qvac/sdk 0.22.0` and local GGUF weights, executing locally on CPU/GPU (`execution_mode: qvac_local_hardware`).
-2. **Expert Agronomic Rule-Based Engine (`fao56-agronomic-rules`)**: Explicitly labeled deterministic agricultural calculations executing the FAO-56 Soil Water Balance continuum equations (`execution_mode: rule_based_fao56`).
+TerraNexus integrates local edge intelligence through clearly distinguished, transparently labeled execution tiers:
+1. **Verified Real QVAC Neural Model Engine (`QWEN3_600M_INST_Q4`)**: Connected via `@qvac/sdk 0.22.0` executing local GGUF weights on CPU (`execution_mode: qvac_local_hardware`). Strictly halts and exits with non-zero code on any failure without mock or canned fallbacks.
+2. **Verified Expert Agronomic Rule-Based Engine (`fao56-agronomic-rules`)**: Deterministic soil water balance continuum calculations implementing FAO-56 Irrigation guidelines (`execution_mode: rule_based_fao56`).
+3. **Hardware Safety Boundary**: AI recommendations never bypass physical hardware interlocks; microcontroller watchdog timers and GPIO cutoff switches remain autonomous.
+4. **Offline Edge UI Scaffolding**: Fast document hashing retrieval and audio protocol stubs (`simulated_edge_stub`) for field testing without heavy audio tensor runtime overhead.
 
-#### A. Run Real QVAC Local Model via CLI:
+#### A. Run Real QVAC Local Neural Model via CLI (No Fallback):
 ```bash
-# Run baseline 3-run benchmark or custom prompt
+# Baseline prompt (Kenya agricultural coding club)
 node scripts/first-chat.mjs
 
-# Run changed agronomic water-saving prompt
+# Changed agronomic prompt (tomato drip irrigation water saving)
 node scripts/first-chat.mjs --changed
 
-# Alternatively via npm
-npm run chat
+# Custom prompt
+node scripts/first-chat.mjs "What are the early symptoms of blossom end rot in tomatoes?"
+
+# JSON output driver
+node scripts/qvac-infer.mjs --prompt "Say hello in one word." --json
 ```
 
 #### B. Run QVAC Local Hardware OpenAI-Compatible Server Daemon:
 ```bash
-# Option A: Start using Python CLI
+# Start server on port 8080
 python3 scripts/run_qvac_server.py --port 8080
-
-# Option B: Start using Makefile
-make run-qvac
 ```
-- **Local Model Binary**: [`models/qvac/qvac-agronomist-7b.bin`](models/qvac/qvac-agronomist-7b.bin) and local GGUF cache (`~/.qvac/models/5b8aae816570a09d_Qwen3-0.6B-Q4_0.gguf`)
+- **Local Model Binary**: `~/.qvac/models/5b8aae816570a09d_Qwen3-0.6B-Q4_0.gguf` (382,156,480 bytes)
 - **Model Card & Specifications**: [`models/qvac/model_card.json`](models/qvac/model_card.json)
 - **OpenAI-Compatible Inference Endpoint**: `http://localhost:8080/v1/chat/completions`
 - **Health & Models Diagnostics**: `http://localhost:8080/health` & `http://localhost:8080/v1/models`
-- **Private Document Vector Retrieval**: `POST /api/v1/intelligence/documents/query` & `POST /api/v1/intelligence/chat-documents`
-- **On-Device Whisper Speech & TTS**: `POST /api/v1/intelligence/speech/transcribe` & `POST /api/v1/intelligence/speech/synthesize`
 - **Tether WDK Agentic Finance Vault**: `GET /api/v1/finance/wallet` & `POST /api/v1/finance/payments/approve` (Enforced Human Approval Gate)
 
 ---
@@ -142,38 +142,118 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
 - **Scenario Tested**: Operated the mobile client in airplane mode. Created field scouting observations with photo metadata and checked off farm task checklist items.
 - **Result**: All mutations were stored locally in the mobile SQLite database (`local_field_observations` and `local_tasks`), assigned client UUIDs, and queued in `sync_queue`. Once network connectivity was restored, the `MobileSyncEngine` pushed the batch to `POST /api/v1/sync/push`, applied the server-side updates, incremented sync cursors, and resolved conflicts using the configured deterministic conflict resolution policies (`server_wins` / `client_wins`).
 
-### 4. Local Agronomic Intelligence (QVAC Local Hardware Model & Rule-Based Engine — Wi-Fi Off)
+### 4. Local Agronomic Intelligence (QVAC Local Neural Model — Wi-Fi Disconnected)
 
-#### Test A: Real QVAC Model Benchmark (Node.js + @qvac/sdk 0.22.0 — 100% Offline)
-- **Machine**: Linux x86_64, Intel / AMD CPU, 16 GB RAM
-- **Node**: v22.14.0 | npm: 10.9.2 | SDK: `@qvac/sdk 0.22.0`
-- **Model**: `QWEN3_600M_INST_Q4` (`Qwen3-0.6B-Q4_0.gguf`)
-- **Execution Mode**: `qvac_local_hardware` (Ran on: `cpu`)
-- **Unchanged Prompt**: *"Provide 3 creative names for a local agricultural coding club in Kenya."*
-  - **Run 1 (Cold load)**: 121,032 ms (including initial weights verification), 2.6 tokens/s (340 tokens)
-  - **Run 2 (Warm)**: 8,181 ms first token, 21.8 tokens/s (687 tokens)
-  - **Run 3 (Warm)**: 7,480 ms first token, 21.0 tokens/s (408 tokens)
-  - **Middle Speed**: **21.0 tokens/s** | **Middle First Text Token**: **8,181 ms**
-  - **Answer Quality**: All three runs generated distinct, sensible club names:
-    - Run 1: *"Code Kenya Farmers"*, *"Digital Fields"*, *"Agriculture Tech Hub"*
-    - Run 2: *"Code for Kenya"*, *"Agriculture Coding Club"*, *"Green Code"*
-    - Run 3: *"Agricoders"*, *"CodeKen"*, *"Agritech"*
-- **Changed Prompt**: *"Give 3 bullet-point tips for saving water in tomato drip irrigation. Each tip must be 8 words or fewer."*
-  - **Format**: Followed. Exactly 3 bullets:
-    - *"• Monitor soil moisture to prevent overwatering."* (6 words)
-    - *"• Use efficient drip systems for minimal water loss."* (8 words)
-    - *"• Reduce water waste during drip irrigation."* (6 words)
-  - **Speed**: **21.9 tokens/s** | **First Text Token**: **8,527 ms**
-- **Offline Operation**: Executed with network completely severed (`--offline`). The model loaded directly from local cache (`~/.qvac/models/5b8aae816570a09d_Qwen3-0.6B-Q4_0.gguf`) and answered fully offline with `execution_mode: qvac_local_hardware`.
+#### Test A: Verified Real QVAC Neural Model Execution (Node.js + @qvac/sdk 0.22.0)
+- **Environment & Host Machine**:
+  - **OS Platform**: Linux x86_64 (`linux-x64`)
+  - **CPU**: AMD / Intel x86_64 host cores
+  - **Host Memory**: 15.42 GB RAM
+  - **Node.js**: `v22.14.0` | **npm**: `10.9.2` | **SDK**: `@qvac/sdk 0.22.0`
+  - **Local Model Weights**: `~/.qvac/models/5b8aae816570a09d_Qwen3-0.6B-Q4_0.gguf` (`382,156,480 bytes`, SHA-256 verified)
+  - **Offline State**: All Wi-Fi & external networking physically severed / disconnected. Zero external network calls.
+  - **Failure Handling**: Zero mock fallback, zero canned answers, zero hardcoded latency. SDK or inference failures immediately halt with `exit code 1`.
 
-#### Test B: Expert Agronomic Rule-Based Engine (Explicitly Labeled — Wi-Fi Off)
-- **Engine Type**: `rule_based_fao56` (`fao56-agronomic-rules`)
-- **Scenario Tested**: Disconnected all external Wi-Fi and evaluated tomato greenhouse plot with 16.2% volumetric soil moisture.
-- **Server Command Executed**:
+- **Exact Execution Command**:
   ```bash
-  python3 scripts/run_qvac_server.py --port 8080
+  node scripts/first-chat.mjs
   ```
-- **Inference Query Sent (Offline)**:
+
+- **Complete Unedited Terminal Output**:
+  ```text
+  ======================================================================
+  TERRANEXUS: QVAC LOCAL NEURAL MODEL INFERENCE BENCHMARK
+  Runtime Environment:
+  • OS Platform: linux (x64)
+  • Node Version: v22.14.0
+  • Model Descriptor: QWEN3_600M_INST_Q4
+  • Model GGUF Target: Qwen3-0.6B-Q4_0.gguf
+  • Expected File Size: 382156480 bytes (~364.5 MB)
+  • Engine Addon: llm (llamacpp-completion)
+  ======================================================================
+
+  [Host Hardware] CPU: x86_64 CPU | RAM: 15.42 GB
+
+  [1/3] Loading local neural model weights into memory...
+  Loading progress: 100%
+  [2/3] Model loaded successfully in 3833 ms. Local Model ID: eb6319dbc09dc654
+
+  [3/3] Executing on-device neural completion...
+  Prompt: "Provide 3 creative names for a local agricultural coding club in Kenya."
+
+  --- MODEL RESPONSE STREAM START ---
+  <think>
+  Okay, the user wants three creative names for a local agricultural coding club in Kenya. Let me start by thinking about what agricultural coding club typically involves. They probably focus on technology, coding, and agriculture. So, the names should reflect that.
+
+  First, maybe something related to farming. "Farming" is a keyword here. Let me think of synonyms: "Agriculture," "Cultivation," "Rice." But need to make them catchy. How about "Rice Code"? That's a common term but maybe too generic.
+
+  Alternatively, think about technology in agriculture. Words like "Tech" or "Code." Maybe "Code for Agriculture" but that's not catchy. "TechInAgric" – that sounds good. But need to check if that's acceptable.
+
+  Wait, the user said "local agricultural coding club," so maybe focus on the local aspect. "Kenya Code" – but that's too simple. Or "Kenya's Code for Farming." Hmm, maybe "Kenya Code" is too simple. Let me think of something with the country name.
+
+  Also, considering the user is in Kenya, maybe include "Kenya" in the name. Let me brainstorm some options. "AgricKen" – that's a nice abbreviation. "KenyaCode" – but maybe too straightforward. Alternatively, "KenyaCode for Farmers." That includes the country and the purpose.
+
+  I need to ensure the names are catchy and not generic. Let me list a few:
+
+  1. KenyaCode – a name that combines the country and the club name, which might be catchy.
+
+  2. Code for Kenya – a direct mention of the country and the purpose.
+
+  3. FarmCode – focuses on farming and coding.
+
+  Wait, "Code for Kenya" could be a good start. Let me check if there's a more creative way. Maybe "Kenya Tech" but that's not as specific. Alternatively, "Kenya Tech Farmers" – but that's a bit long. The user might want concise names.
+
+  So final options could be:
+
+  1. KenyaCode – combining the country and the club name.
+
+  2. Code for Ken – more straightforward.
+
+  3. KenTechFarmers – a bit more engaging.
+
+  I think these cover the agricultural aspect and include the country name. Let me make sure none of them are duplicates and are suitable for a club.
+  </think>
+
+  Here are three creative names for a local agricultural coding club in Kenya:  
+  1. **KenyaCode** – Combines the country name with a coding focus.  
+  2. **Code for Ken** – Highlights the club’s purpose and relevance to Kenya.  
+  3. **FarmCode** – Emphasizes farming and coding, making it relatable to agricultural activities.
+  --- MODEL RESPONSE STREAM END ---
+
+  [Unload] Model eb6319dbc09dc654 successfully unloaded from memory.
+
+  ======================================================================
+  VERIFIED LOCAL MODEL BENCHMARK METRICS (NO SIMULATION / NO FALLBACK):
+  • Model: QWEN3_600M_INST_Q4 (Qwen3-0.6B-Q4_0.gguf)
+  • Execution Mode: qvac_local_hardware
+  • Device: cpu
+  • Model Load Duration: 3833 ms
+  • First Text Token Latency: 199.6 ms
+  • Generation Duration: 15.20 s
+  • Total Tokens Generated: 565
+  • Throughput Speed: 37.18 tokens/s
+  ======================================================================
+  ```
+
+#### Test B: Changed Agronomic Prompt Run (100% Offline — Wi-Fi Off)
+- **Execution Command**:
+  ```bash
+  node scripts/first-chat.mjs --changed
+  ```
+- **Prompt**: *"Give 3 bullet-point tips for saving water in tomato drip irrigation. Each tip must be 8 words or fewer."*
+- **Measured Metrics**:
+  - **First Text Token Latency**: **217.4 ms**
+  - **Throughput Speed**: **31.28 tokens/s**
+  - **Total Tokens Generated**: 814
+  - **Generation Duration**: 26.02 s
+- **Actual Model Generated Bullets**:
+  - `- Use the right amount of water to prevent overwatering.` (8 words)
+  - `- Check water frequency to prevent overwatering.` (6 words)
+  - `- Use a drip head to keep the water in drips, reducing evaporation.` (12 words)
+
+#### Test C: Expert Agronomic Rule-Based Engine (`execution_mode: rule_based_fao56`)
+- **Engine Type**: Deterministic mathematical implementation of FAO-56 Soil Water Balance equations without neural weights.
+- **Query (Offline)**:
   ```bash
   curl -s -X POST http://localhost:8000/api/v1/intelligence/local-reasoning \
     -H "Content-Type: application/json" \
@@ -182,7 +262,7 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
       "model_name": "fao56-agronomic-rules"
     }' | jq .
   ```
-- **Verified Output (Wi-Fi Off — execution_mode: rule_based_fao56)**:
+- **Verified Response**:
   ```json
   {
     "model": "fao56-agronomic-rules",
@@ -198,26 +278,35 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
       }
     ],
     "evidence_citations": [
-      "QVAC local inference (fao56-agronomic-rules)",
-      "FAO-56 Soil-Plant-Atmosphere Continuum guidelines",
+      "FAO-56 Soil Water Balance Continuum equation",
+      "Root Zone Available Water Capacity (AWC)",
       "Local hardware soil probe telemetry"
     ],
-    "confidence": 0.94,
+    "confidence": 1.0,
     "execution_mode": "rule_based_fao56"
   }
   ```
 
-### 5. Private Document Search & Chat with Farm Manuals (qvac-fabric-llm.cpp)
-- **Scenario Tested**: Disconnected all internet connectivity. Indexed FAO-56 irrigation and crop depletion manuals and executed local cosine similarity vector retrieval against private field data.
-- **Result**: Document chunks were embedded deterministically into 64-dimensional dense vectors and retrieved in < 2ms without sending queries or proprietary farm records to external servers. "Chat with your documents" augmented the QVAC local model with exact manual citations.
+#### Test D: Python Neural API Failure Propagation (No Rule Fallback)
+- **Behavior**: When querying the neural model (`QWEN3_600M_INST_Q4`) and the model runtime is unavailable or errors out, the Python `/api/v1/intelligence/local-reasoning` API returns `HTTP 503 Service Unavailable`. It strictly **does not** return rule-based calculations labeled as hardware.
+- **Verified by Automated Test**: `backend/tests/test_qa_intelligence_and_fao56.py::test_tc_intel_010_neural_model_failure_propagation`.
 
-### 6. On-Device Speech Transcription & Spoken Voice Synthesis (qvac-fabric-speech.cpp)
-- **Scenario Tested**: Tested local Whisper ASR transcription of field voice instructions ("Why is my greenhouse soil moisture dropping?") and local speech generation.
-- **Result**: Produced compliant 16-bit PCM WAV spoken audio container on-device with zero external TTS cloud dependencies and sub-second rendering.
+---
 
-### 7. Tether WDK Self-Custodial USD₮ Wallet & Enforced Human Approval Gates
-- **Scenario Tested**: Simulated an automated AI procurement agent proposing a replacement solenoid valve ($85.00 USD₮) following sensor telemetry anomaly.
-- **Result**: The transaction was placed in `pending_approval` state with `requires_human_approval: true`. Autonomous execution without human signature was strictly rejected. Upon human operator review and approval via `POST /api/v1/finance/payments/{id}/approve`, the transaction was authorized and an on-chain transaction hash (`0x...`) was generated and logged with operator audit identity.
+### 5. Architectural Safety Boundary & Edge UI Prototyping Transparency
+
+1. **Independent Microcontroller Safety Boundary**:
+   - Genuine local AI neural models make agronomic *recommendations*.
+   - Physical solenoid valve and pump actuation is strictly governed by microcontroller firmware watchdogs (`MAX_CONTINUOUS_RUN_SEC = 1800s`), optocoupled fail-closed relays, and hardwired GPIO Emergency Stop switches that cannot be bypassed by software or model outputs.
+
+2. **On-Device Private Document Vector Search (`qvac-fabric-llm.cpp` RAG)**:
+   - Evaluated using deterministic token-feature frequency hashing for offline, lightweight vector cosine search without heavy tensor memory overhead.
+
+3. **Speech-to-Text & Spoken Audio Synthesis Protocol (`qvac-fabric-speech.cpp`)**:
+   - Currently implemented as lightweight audio protocol stubs (`simulated_edge_stub`) for validating farmer voice UI interaction workflows offline. Real neural execution is concentrated in the verified LLM engine (`QWEN3_600M_INST_Q4`).
+
+4. **Tether WDK Agentic Finance Vault (Mandatory Human Approval Gate)**:
+   - Full human approval lifecycle: AI agent financial transactions enter `pending_approval` and require explicit human operator signature (`POST /api/v1/finance/payments/{id}/approve`) before executing. Autonomous unapproved fund transfer is strictly blocked.
 
 ### 8. Local Test Suites & End-to-End Verification
 - **Scenario Tested**: Executed all unit, integration, and end-to-end test suites offline.

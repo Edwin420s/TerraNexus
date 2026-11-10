@@ -17,9 +17,11 @@ from typing import List, Dict, Any, Optional
 
 class QVACDocumentSearchEngine:
     """
-    On-device document retrieval engine inspired by qvac-fabric-llm.cpp/examples/retrieval.
-    Performs deterministic local token embedding & cosine similarity vector search
-    completely offline without external cloud vector databases.
+    On-device document retrieval engine inspired by qvac-fabric-llm.cpp.
+    Performs deterministic token-hash feature vector generation & cosine similarity.
+    NOTE ON IMPLEMENTATION STATUS:
+    Uses deterministic n-gram/token hashing heuristics for lightweight edge vector search
+    without requiring heavy dense embedding neural tensor runtimes.
     """
 
     @staticmethod
@@ -87,7 +89,9 @@ class QVACDocumentSearchEngine:
                 "chunk_id": ch.get("chunk_id", str(uuid.uuid4())),
                 "text": ch["text"],
                 "similarity_score": sim,
-                "source_doc": ch.get("source_doc", "FAO-56 Irrigation Reference")
+                "source_doc": ch.get("source_doc", "FAO-56 Irrigation Reference"),
+                "embedding_engine": "deterministic_token_hash_v1",
+                "execution_mode": "deterministic_token_hash"
             })
         scored.sort(key=lambda x: x["similarity_score"], reverse=True)
         return scored[:top_k]
@@ -95,19 +99,18 @@ class QVACDocumentSearchEngine:
 
 class QVACSpeechEngine:
     """
-    On-device speech intelligence engine inspired by qvac-fabric-speech.cpp.
-    Provides Speech-to-Text (Whisper ASR) and Text-to-Speech (TTS) audio synthesis
-    without Python dependencies or cloud APIs.
+    On-device speech intelligence emulation adapter inspired by qvac-fabric-speech.cpp.
+    NOTE ON IMPLEMENTATION STATUS:
+    Provides lightweight edge audio protocol scaffolding for frontend speech UI testing.
+    Transcription and synthesis are explicitly labeled as simulated edge stubs.
     """
 
     @staticmethod
     def transcribe_audio(audio_bytes: bytes, filename: str = "audio.wav") -> Dict[str, Any]:
         """
-        On-device transcription emulation.
-        Detects audio structure, samples duration, and transcribes farmer voice queries.
+        On-device transcription emulation (simulated stub).
         """
         size = len(audio_bytes)
-        # Parse realistic farmer query from speech
         sample_queries = [
             "Why is my soil moisture dropping and should I irrigate?",
             "What is the irrigation priority for greenhouse tomatoes today?",
@@ -117,18 +120,20 @@ class QVACSpeechEngine:
         chosen = sample_queries[size % len(sample_queries)]
         return {
             "transcription": chosen,
-            "engine": "qvac-fabric-speech-whisper",
-            "model": "whisper-base-q4",
+            "engine": "qvac_speech_whisper_simulation",
+            "model": "whisper-base-q4-stub",
             "audio_duration_sec": round(size / 32000.0, 2) if size > 32000 else 2.5,
             "confidence": 0.96,
-            "language": "en"
+            "language": "en",
+            "execution_mode": "simulated_edge_stub",
+            "verified_neural": False
         }
 
     @staticmethod
     def synthesize_speech(text: str, voice: str = "agronomist_female") -> Dict[str, Any]:
         """
-        On-device Text-to-Speech (TTS) synthesis.
-        Generates standard canonical 16-bit PCM WAV audio container on local hardware.
+        On-device Text-to-Speech (TTS) audio synthesis emulation (simulated stub).
+        Generates standard canonical 16-bit PCM WAV audio container with modulated chime tone.
         """
         sample_rate = 16000
         duration_sec = max(1.5, min(8.0, len(text.split()) * 0.45))
@@ -165,8 +170,9 @@ class QVACSpeechEngine:
             "sample_rate": sample_rate,
             "duration_seconds": round(duration_sec, 2),
             "voice_profile": voice,
-            "engine": "qvac-fabric-speech-tts",
-            "execution_mode": "qvac_local_hardware",
+            "engine": "qvac_speech_tts_simulation",
+            "execution_mode": "simulated_edge_stub",
+            "verified_neural": False,
             "audio_base64": base64.b64encode(wav_bytes).decode("ascii")
         }
 
