@@ -11,6 +11,8 @@ class ESP32EdgeSimulator:
         self.watchdog_timer = 0
         self.relay_state = False  # active-LOW: False = DE-ENERGIZED (CLOSED)
         self.emergency_latched = False
+        self.button_physically_held = False
+        self.last_command_sequence = 0
         self.spool_buffer = []
         self.max_spool_records = 500
 
@@ -21,11 +23,47 @@ class ESP32EdgeSimulator:
         pct = (self.air_cal - clamped) / (self.air_cal - self.water_cal) * 100.0
         return round(pct, 2)
 
-    def trigger_emergency_stop_isr(self):
+    def trigger_emergency_stop_isr(self, physically_held: bool = True):
         """Simulates GPIO 14 hardware interrupt service routine."""
         self.emergency_latched = True
+        self.button_physically_held = physically_held
         self.relay_state = False  # Instant hardware cutoff
         self.watchdog_timer = 0
+
+    def reset_emergency_stop(self):
+        """Verifies physical button is released before clearing latch."""
+        if self.button_physically_held:
+            return False, "BUTTON_PHYSICALLY_HELD_DOWN"
+        self.emergency_latched = False
+        return True, "EMERGENCY_STOP_SAFELY_RESET"
+
+    def process_command(self, cmd: dict):
+        """Processes incoming hardware commands with replay protection."""
+        seq = cmd.get("sequence", 0)
+        if seq > 0:
+            if seq <= self.last_command_sequence:
+                return False, "REPLAY_DETECTED_SEQUENCE_STALE"
+            self.last_command_sequence = seq
+
+        action = cmd.get("action", "")
+        if action == "reset_emergency_stop":
+            return self.reset_emergency_stop()
+
+        if self.emergency_latched:
+            return False, "EMERGENCY_STOP_ACTIVE"
+
+        if action in ("turn_on", "start_irrigation", "start_closed_loop"):
+            duration = cmd.get("duration_sec", 300)
+            if duration > self.max_watchdog_sec or duration <= 0:
+                return False, "RUNTIME_LIMIT_EXCEEDED"
+            self.relay_state = True
+            self.watchdog_timer = duration
+            return True, "executing"
+        elif action in ("turn_off", "stop_irrigation"):
+            self.relay_state = False
+            self.watchdog_timer = 0
+            return True, "completed"
+        return False, "UNKNOWN_COMMAND_TYPE"
 
     def start_actuation(self, requested_duration_sec: int) -> bool:
         """Starts actuation if safety preflights pass."""
@@ -113,3 +151,46 @@ def test_tc_edge_004_circular_flash_spooling():
     # Should contain records 5..9
     assert sim.spool_buffer[0]["seq"] == 5
     assert sim.spool_buffer[-1]["seq"] == 9
+
+def test_tc_edge_005_emergency_stop_physical_reset_and_replay_protection():
+    """Verify physical button release requirement and command sequence replay protection."""
+    sim = ESP32EdgeSimulator()
+
+    # 1. Trigger E-stop with button physically held down
+    sim.trigger_emergency_stop_isr(physically_held=True)
+    assert sim.emergency_latched is True
+
+    # Remote reset attempt while button is physically held down must fail
+    success, reason = sim.reset_emergency_stop()
+    assert success is False
+    assert reason == "BUTTON_PHYSICALLY_HELD_DOWN"
+    assert sim.emergency_latched is True
+
+    # Release physical button and reset again
+    sim.button_physically_held = False
+    success, reason = sim.reset_emergency_stop()
+    assert success is True
+    assert reason == "EMERGENCY_STOP_SAFELY_RESET"
+    assert sim.emergency_latched is False
+
+    # 2. Command Sequence Replay Protection
+    # Valid initial command (seq=10)
+    ok, status = sim.process_command({"action": "turn_on", "sequence": 10, "duration_sec": 60})
+    assert ok is True
+    assert status == "executing"
+
+    # Replay attack with same sequence (seq=10) must be rejected
+    ok2, status2 = sim.process_command({"action": "turn_on", "sequence": 10, "duration_sec": 60})
+    assert ok2 is False
+    assert status2 == "REPLAY_DETECTED_SEQUENCE_STALE"
+
+    # Older sequence (seq=5) must be rejected
+    ok3, status3 = sim.process_command({"action": "turn_on", "sequence": 5, "duration_sec": 60})
+    assert ok3 is False
+    assert status3 == "REPLAY_DETECTED_SEQUENCE_STALE"
+
+    # Monotonically higher sequence (seq=11) must be accepted
+    ok4, status4 = sim.process_command({"action": "turn_off", "sequence": 11})
+    assert ok4 is True
+    assert status4 == "completed"
+

@@ -27,6 +27,7 @@ unsigned long commandDurationMillis = MAX_CONTINUOUS_RUN_SEC * 1000UL;
 unsigned long lastTelemetryMillis = 0;
 unsigned long lastHeartbeatMillis = 0;
 unsigned long sequenceCounter = 0;
+unsigned long lastCommandSequence = 0;
 
 // Closed-Loop Flow & Dry-Run Safety State
 volatile unsigned long flowPulseCount = 0;
@@ -111,6 +112,31 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
     const char* commandId = doc["command_id"] | "unknown";
     const char* action = doc["command_type"] | doc["action"] | "";
 
+    // Command Replay Protection (Strict monotonic sequence counter)
+    if (doc["sequence"].is<unsigned long>()) {
+        unsigned long cmdSeq = doc["sequence"].as<unsigned long>();
+        if (cmdSeq > 0) {
+            if (cmdSeq <= lastCommandSequence) {
+                publishCommandAck(commandId, "failed", "REPLAY_DETECTED_SEQUENCE_STALE");
+                return;
+            }
+            lastCommandSequence = cmdSeq;
+        }
+    }
+
+    // Handle Reset of Emergency Stop with Physical Verification
+    if (strcmp(action, "reset_emergency_stop") == 0) {
+        // Physical interlock: Emergency stop button must be physically released (HIGH with pullup)
+        if (digitalRead(PIN_EMERGENCY_STOP_BTN) == LOW) {
+            publishCommandAck(commandId, "failed", "BUTTON_PHYSICALLY_HELD_DOWN");
+            return;
+        }
+        emergencyStopActive = false;
+        dryRunFaultActive = false;
+        publishCommandAck(commandId, "completed", "EMERGENCY_STOP_SAFELY_RESET");
+        return;
+    }
+
     // Device-local safety checks (Independent of cloud)
     if (emergencyStopActive) {
         publishCommandAck(commandId, "failed", "EMERGENCY_STOP_ACTIVE");
@@ -118,10 +144,6 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
     }
 
     if (strcmp(action, "start_closed_loop") == 0) {
-        if (emergencyStopActive) {
-            publishCommandAck(commandId, "failed", "EMERGENCY_STOP_ACTIVE");
-            return;
-        }
         if (millis() - lastPumpStopTime < (MIN_COOLOFF_SEC * 1000) && lastPumpStopTime != 0) {
             publishCommandAck(commandId, "failed", "PUMP_COOLOFF_ACTIVE");
             return;
@@ -154,14 +176,14 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
         publishCommandAck(commandId, "closed_loop_executing");
     }
-    else if (strcmp(action, "turn_on") == 0) {
+    else if (strcmp(action, "start_irrigation") == 0 || strcmp(action, "turn_on") == 0) {
         // Check cool-off period
         if (millis() - lastPumpStopTime < (MIN_COOLOFF_SEC * 1000) && lastPumpStopTime != 0) {
             publishCommandAck(commandId, "failed", "PUMP_COOLOFF_ACTIVE");
             return;
         }
 
-        int durationSec = doc["payload"]["duration_sec"] | 300;
+        int durationSec = doc["payload"]["duration_seconds"] | doc["payload"]["duration_sec"] | 300;
         if (durationSec <= 0 || durationSec > MAX_CONTINUOUS_RUN_SEC) {
             publishCommandAck(commandId, "failed", "RUNTIME_LIMIT_EXCEEDED");
             return;
@@ -169,34 +191,32 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
         commandDurationMillis = (unsigned long)durationSec * 1000UL;
 
-        // Engage relays safely
-        digitalWrite(PIN_RELAY_VALVE, LOW); // Open valve first
+        // Engage relays safely: open valve first, then start pump
+        digitalWrite(PIN_RELAY_VALVE, LOW);
         delay(200);
-        digitalWrite(PIN_RELAY_PUMP, LOW);  // Start pump
+        digitalWrite(PIN_RELAY_PUMP, LOW);
         pumpIsActive = true;
         pumpStartTime = millis();
 
         publishCommandAck(commandId, "executing");
     } 
-    else if (strcmp(action, "turn_off") == 0) {
+    else if (strcmp(action, "stop_irrigation") == 0 || strcmp(action, "turn_off") == 0) {
         digitalWrite(PIN_RELAY_PUMP, HIGH); // Stop pump
         delay(200);
         digitalWrite(PIN_RELAY_VALVE, HIGH); // Close valve
         pumpIsActive = false;
+        closedLoopActive = false;
         lastPumpStopTime = millis();
 
         publishCommandAck(commandId, "completed");
-    }
-    else if (strcmp(action, "reset_emergency_stop") == 0) {
-        // Intentional safe reset of latched emergency stop
-        emergencyStopActive = false;
-        dryRunFaultActive = false;
-        publishCommandAck(commandId, "completed", "EMERGENCY_STOP_SAFELY_RESET");
     }
     else if (strcmp(action, "reboot") == 0) {
         publishCommandAck(commandId, "acknowledged");
         delay(500);
         ESP.restart();
+    }
+    else {
+        publishCommandAck(commandId, "failed", "UNKNOWN_COMMAND_TYPE");
     }
 }
 
