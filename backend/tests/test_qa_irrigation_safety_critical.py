@@ -119,3 +119,79 @@ def test_tc_safe_006_cross_tenant_zone_isolation():
     })
     assert plan_resp.status_code == 404
 
+def test_tc_safe_007_preflight_device_enforcement_and_emergency_stop():
+    """Verify that zones without provisioned devices or under emergency stop are blocked."""
+    from app.core.database import SessionLocal
+    from app.models.entities import Farm, IrrigationZone, WaterSource, Device, DeviceCommand
+    db = SessionLocal()
+    try:
+        # 1. Create a isolated farm with NO devices
+        isolated_farm = Farm(
+            organisation_id="a0000000-0000-0000-0000-000000000001",
+            name="No Device Farm",
+            farm_code=f"NDF_{uuid.uuid4().hex[:4]}",
+            timezone="UTC"
+        )
+        db.add(isolated_farm)
+        db.commit()
+        db.refresh(isolated_farm)
+
+        src = WaterSource(
+            organisation_id=isolated_farm.organisation_id,
+            farm_id=isolated_farm.id,
+            name="Orphan Reservoir",
+            source_type="borehole",
+            capacity_litres=50000.0,
+            current_level_litres=40000.0,
+            status="operational"
+        )
+        db.add(src)
+        db.commit()
+        db.refresh(src)
+
+        orphan_zone = IrrigationZone(
+            organisation_id=isolated_farm.organisation_id,
+            farm_id=isolated_farm.id,
+            water_source_id=src.id,
+            name="Orphan Zone",
+            zone_code=f"OZ_{uuid.uuid4().hex[:4]}",
+            irrigation_method="drip",
+            flow_rate_lpm=30.0,
+            target_soil_moisture_pct=60.0
+        )
+        db.add(orphan_zone)
+        db.commit()
+        db.refresh(orphan_zone)
+
+        # Actuation should fail preflight because no device is attached or present on the farm
+        resp = client.post("/api/v1/irrigation/control/start", json={
+            "zone_id": orphan_zone.id,
+            "duration_minutes": 5
+        })
+        assert resp.status_code in (400, 409, 422)
+
+        # 2. Attach an emergency-stopped device to this farm
+        estop_device = Device(
+            organisation_id=isolated_farm.organisation_id,
+            farm_id=isolated_farm.id,
+            name="E-stop Controller",
+            device_uid=f"esp32-estop-{uuid.uuid4().hex[:6]}",
+            device_type="esp32_gateway",
+            provisioning_status="active",
+            connection_status="online",
+            config={"emergency_stop_active": True}
+        )
+        db.add(estop_device)
+        db.commit()
+
+        # Actuation should be blocked by emergency stop
+        resp2 = client.post("/api/v1/irrigation/control/start", json={
+            "zone_id": orphan_zone.id,
+            "duration_minutes": 5
+        })
+        assert resp2.status_code in (400, 409, 422)
+
+    finally:
+        db.close()
+
+

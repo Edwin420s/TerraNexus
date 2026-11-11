@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.core.auth import get_current_active_user, get_user_organisation_ids
 from app.models.entities import (
     User, WaterSource, Pump, IrrigationZone, IrrigationPlan,
-    IrrigationPlanStep, IrrigationEvent, SafetyEvent, Farm, Device, Membership
+    IrrigationPlanStep, IrrigationEvent, SafetyEvent, Farm, Device, Membership, DeviceCommand
 )
 from app.modules.irrigation.safety import validate_actuation, ActuationContext
 
@@ -89,13 +89,17 @@ def evaluate_device_preflight(zone: IrrigationZone, db: Session):
     else:
         dev = db.query(Device).filter(Device.farm_id == zone.farm_id).first()
     
-    if dev:
-        device_trusted = dev.provisioning_status in ("active", "provisioned")
-        device_online = dev.connection_status == "online"
-    else:
-        device_trusted = True
-        device_online = True
-    return dev, device_trusted, device_online
+    if not dev:
+        return None, False, False, False, False
+
+    device_trusted = dev.provisioning_status in ("active", "provisioned")
+    device_online = dev.connection_status == "online"
+
+    cfg = dev.config if isinstance(dev.config, dict) else {}
+    emergency_stop_active = bool(cfg.get("emergency_stop_active", cfg.get("emergency_stop", False)))
+    local_interlock_ready = bool(cfg.get("local_interlock_ready", True)) and not emergency_stop_active and device_online
+
+    return dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active
 
 @router.get("/safety-capabilities")
 async def safety_capabilities():
@@ -223,7 +227,7 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
     # 1. Execute Safety Preflight Interlocks (TNX-API-001 Section 49 & TNX-ARCH-001 Section 9)
     requested_runtime = req.duration_minutes * 60
     actor_authorized = check_user_can_actuate(user, zone.organisation_id, db)
-    _, device_trusted, device_online = evaluate_device_preflight(zone, db)
+    dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active = evaluate_device_preflight(zone, db)
 
     source = db.query(WaterSource).filter(WaterSource.id == zone.water_source_id).first()
     water_available = (
@@ -234,7 +238,7 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
 
     pump_fault = False
     if zone.pump:
-        if zone.pump.power_source == "fault" or zone.pump.max_flow_rate_lpm <= 0:
+        if zone.pump.power_source == "fault" or (zone.pump.max_flow_rate_lpm is not None and zone.pump.max_flow_rate_lpm <= 0):
             pump_fault = True
 
     max_runtime = zone.pump.max_continuous_runtime_sec if (zone.pump and zone.pump.max_continuous_runtime_sec) else 3600
@@ -243,8 +247,8 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
         actor_authorized=actor_authorized,
         device_trusted=device_trusted,
         device_online=device_online,
-        local_interlock_ready=True,
-        emergency_stop_active=False,
+        local_interlock_ready=local_interlock_ready,
+        emergency_stop_active=emergency_stop_active,
         water_available=water_available,
         pump_fault=pump_fault,
         command_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
@@ -271,7 +275,40 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
         started_at=datetime.now(timezone.utc)
     )
     db.add(event)
-    db.commit()
+
+    # 4. Dispatch Command to Hardware Device via MQTT
+    if dev:
+        cmd = DeviceCommand(
+            organisation_id=zone.organisation_id,
+            farm_id=zone.farm_id,
+            device_id=dev.id,
+            command_type="start_irrigation",
+            payload={
+                "zone_id": zone.id,
+                "duration_seconds": requested_runtime,
+                "flow_rate_lpm": float(zone.flow_rate_lpm or 45.0)
+            },
+            status="dispatched",
+            priority=1,
+            preflight_checks={
+                "actor_authorized": actor_authorized,
+                "device_trusted": device_trusted,
+                "device_online": device_online,
+                "water_available": water_available,
+                "local_interlock_ready": local_interlock_ready,
+                "emergency_stop_active": emergency_stop_active
+            },
+            max_execution_duration_sec=requested_runtime,
+            dispatched_at=datetime.now(timezone.utc),
+            initiated_by=user.id
+        )
+        db.add(cmd)
+        db.commit()
+        from app.services.mqtt_publisher import publish_device_command
+        publish_device_command(dev, cmd)
+    else:
+        db.commit()
+
     db.refresh(event)
 
     return IrrigationEventResponse(
@@ -334,6 +371,25 @@ def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current
         db.add(event)
         db.commit()
         db.refresh(event)
+
+    dev, _, _, _, _ = evaluate_device_preflight(zone, db)
+    if dev:
+        cmd = DeviceCommand(
+            organisation_id=zone.organisation_id,
+            farm_id=zone.farm_id,
+            device_id=dev.id,
+            command_type="stop_irrigation",
+            payload={"zone_id": zone.id, "reason": req.reason or "operator_stop"},
+            status="dispatched",
+            priority=1,
+            max_execution_duration_sec=30,
+            dispatched_at=now,
+            initiated_by=user.id
+        )
+        db.add(cmd)
+        db.commit()
+        from app.services.mqtt_publisher import publish_device_command
+        publish_device_command(dev, cmd)
 
     return IrrigationEventResponse(
         id=event.id,
@@ -461,7 +517,7 @@ def start_closed_loop_cycle(
 
     # Safety Preflight Interlocks
     actor_authorized = check_user_can_actuate(user, zone.organisation_id, db)
-    _, device_trusted, device_online = evaluate_device_preflight(zone, db)
+    dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active = evaluate_device_preflight(zone, db)
     source = db.query(WaterSource).filter(WaterSource.id == zone.water_source_id).first()
     water_available = (
         source is not None 
@@ -475,8 +531,8 @@ def start_closed_loop_cycle(
         actor_authorized=actor_authorized,
         device_trusted=device_trusted,
         device_online=device_online,
-        local_interlock_ready=True,
-        emergency_stop_active=False,
+        local_interlock_ready=local_interlock_ready,
+        emergency_stop_active=emergency_stop_active,
         water_available=water_available,
         pump_fault=False,
         command_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
@@ -511,7 +567,42 @@ def start_closed_loop_cycle(
         water_applied_litres=0.0
     )
     db.add(event)
-    db.commit()
+
+    # Dispatch Closed-Loop Command via MQTT
+    if dev:
+        cmd = DeviceCommand(
+            organisation_id=zone.organisation_id,
+            farm_id=zone.farm_id,
+            device_id=dev.id,
+            command_type="start_closed_loop",
+            payload={
+                "zone_id": zone.id,
+                "target_volume_litres": req.target_volume_litres,
+                "max_duration_seconds": requested_runtime,
+                "dry_run_interlock_sec": req.dry_run_cutoff_sec or 15,
+                "flow_rate_lpm": float(zone.flow_rate_lpm or 45.0)
+            },
+            status="dispatched",
+            priority=1,
+            preflight_checks={
+                "actor_authorized": actor_authorized,
+                "device_trusted": device_trusted,
+                "device_online": device_online,
+                "water_available": water_available,
+                "local_interlock_ready": local_interlock_ready,
+                "emergency_stop_active": emergency_stop_active
+            },
+            max_execution_duration_sec=requested_runtime,
+            dispatched_at=now,
+            initiated_by=user.id
+        )
+        db.add(cmd)
+        db.commit()
+        from app.services.mqtt_publisher import publish_device_command
+        publish_device_command(dev, cmd)
+    else:
+        db.commit()
+
     db.refresh(event)
 
     return {

@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
     mqtt_keepalive: int = 60
+    mqtt_username: str = ""
+    mqtt_password: str = ""
     
     # Security & JWT Auth
     jwt_secret: str = "terranexus-insecure-secret-key-change-in-production-2026"
