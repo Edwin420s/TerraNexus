@@ -24,7 +24,7 @@ def test_tc_perf_001_concurrent_telemetry_ingestion():
             "schema_version": "1.0",
             "device_id": dev_uuid,
             "observed_at": datetime.now(timezone.utc).isoformat(),
-            "sequence": seq,
+            "sequence": 0,
             "measurements": [
                 {"type": "soil_moisture", "value": 28.0 + (seq % 10) * 0.5, "unit": "%"}
             ]

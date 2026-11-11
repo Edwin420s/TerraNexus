@@ -87,19 +87,38 @@ def evaluate_device_preflight(zone: IrrigationZone, db: Session):
     elif zone.pump and zone.pump.control_device_id:
         dev = db.query(Device).filter(Device.id == zone.pump.control_device_id).first()
     else:
-        dev = db.query(Device).filter(Device.farm_id == zone.farm_id).first()
+        # Prioritize operational online controller on this farm
+        dev = db.query(Device).filter(
+            Device.farm_id == zone.farm_id,
+            Device.provisioning_status.in_(("active", "provisioned")),
+            Device.connection_status == "online"
+        ).order_by(Device.created_at.asc()).first()
+        if not dev:
+            dev = db.query(Device).filter(Device.farm_id == zone.farm_id).first()
     
     if not dev:
-        return None, False, False, False, False
+        return None, False, False, False, False, False
 
     device_trusted = dev.provisioning_status in ("active", "provisioned")
+    
+    # Freshness verification: heartbeat or telemetry must be within 120s window
+    now = datetime.now(timezone.utc)
+    last_seen = dev.last_heartbeat_at or dev.last_telemetry_at
+    if last_seen and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+
     device_online = dev.connection_status == "online"
+    if device_online and last_seen:
+        age_seconds = (now - last_seen).total_seconds()
+        if age_seconds > 120:
+            device_online = False
 
     cfg = dev.config if isinstance(dev.config, dict) else {}
     emergency_stop_active = bool(cfg.get("emergency_stop_active", cfg.get("emergency_stop", False)))
-    local_interlock_ready = bool(cfg.get("local_interlock_ready", True)) and not emergency_stop_active and device_online
+    dry_run_fault = bool(cfg.get("dry_run_fault", False))
+    local_interlock_ready = bool(cfg.get("local_interlock_ready", True)) and not emergency_stop_active and not dry_run_fault and device_online
 
-    return dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active
+    return dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active, dry_run_fault
 
 @router.get("/safety-capabilities")
 async def safety_capabilities():
@@ -227,7 +246,7 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
     # 1. Execute Safety Preflight Interlocks (TNX-API-001 Section 49 & TNX-ARCH-001 Section 9)
     requested_runtime = req.duration_minutes * 60
     actor_authorized = check_user_can_actuate(user, zone.organisation_id, db)
-    dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active = evaluate_device_preflight(zone, db)
+    dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active, dry_run_fault = evaluate_device_preflight(zone, db)
 
     source = db.query(WaterSource).filter(WaterSource.id == zone.water_source_id).first()
     water_available = (
@@ -240,6 +259,8 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
     if zone.pump:
         if zone.pump.power_source == "fault" or (zone.pump.max_flow_rate_lpm is not None and zone.pump.max_flow_rate_lpm <= 0):
             pump_fault = True
+    if dry_run_fault:
+        pump_fault = True
 
     max_runtime = zone.pump.max_continuous_runtime_sec if (zone.pump and zone.pump.max_continuous_runtime_sec) else 3600
 
@@ -372,7 +393,7 @@ def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current
         db.commit()
         db.refresh(event)
 
-    dev, _, _, _, _ = evaluate_device_preflight(zone, db)
+    dev, _, _, _, _, _ = evaluate_device_preflight(zone, db)
     if dev:
         cmd = DeviceCommand(
             organisation_id=zone.organisation_id,
@@ -517,7 +538,7 @@ def start_closed_loop_cycle(
 
     # Safety Preflight Interlocks
     actor_authorized = check_user_can_actuate(user, zone.organisation_id, db)
-    dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active = evaluate_device_preflight(zone, db)
+    dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active, dry_run_fault = evaluate_device_preflight(zone, db)
     source = db.query(WaterSource).filter(WaterSource.id == zone.water_source_id).first()
     water_available = (
         source is not None 
@@ -534,7 +555,7 @@ def start_closed_loop_cycle(
         local_interlock_ready=local_interlock_ready,
         emergency_stop_active=emergency_stop_active,
         water_available=water_available,
-        pump_fault=False,
+        pump_fault=bool(dry_run_fault),
         command_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         max_runtime_seconds=max_runtime,
         requested_runtime_seconds=requested_runtime

@@ -194,4 +194,87 @@ def test_tc_safe_007_preflight_device_enforcement_and_emergency_stop():
     finally:
         db.close()
 
+def test_tc_safe_008_stale_heartbeat_and_dry_run_fault_enforcement():
+    """Verify preflight rejects actuation when device heartbeat is >120s stale or dry-run fault is active."""
+    from datetime import datetime, timezone, timedelta
+    from app.core.database import SessionLocal
+    from app.models.entities import Farm, IrrigationZone, WaterSource, Device
+    db = SessionLocal()
+    try:
+        farm = Farm(
+            organisation_id="a0000000-0000-0000-0000-000000000001",
+            name="Stale Node Farm",
+            farm_code=f"SNF_{uuid.uuid4().hex[:4]}",
+            timezone="UTC"
+        )
+        db.add(farm)
+        db.commit()
+        db.refresh(farm)
+
+        src = WaterSource(
+            organisation_id=farm.organisation_id,
+            farm_id=farm.id,
+            name="Stale Test Reservoir",
+            source_type="borehole",
+            capacity_litres=50000.0,
+            current_level_litres=40000.0,
+            status="operational"
+        )
+        db.add(src)
+        db.commit()
+        db.refresh(src)
+
+        zone = IrrigationZone(
+            organisation_id=farm.organisation_id,
+            farm_id=farm.id,
+            water_source_id=src.id,
+            name="Stale Heartbeat Zone",
+            zone_code=f"SHZ_{uuid.uuid4().hex[:4]}",
+            irrigation_method="drip",
+            flow_rate_lpm=30.0,
+            target_soil_moisture_pct=60.0
+        )
+        db.add(zone)
+        db.commit()
+        db.refresh(zone)
+
+        # 1. Device with stale heartbeat (>120s ago)
+        stale_dev = Device(
+            organisation_id=farm.organisation_id,
+            farm_id=farm.id,
+            name="Stale Heartbeat Controller",
+            device_uid=f"esp32-stale-{uuid.uuid4().hex[:6]}",
+            device_type="esp32_gateway",
+            provisioning_status="active",
+            connection_status="online",
+            last_heartbeat_at=datetime.now(timezone.utc) - timedelta(seconds=180),
+            config={"emergency_stop_active": False, "dry_run_fault": False}
+        )
+        db.add(stale_dev)
+        db.commit()
+        db.refresh(stale_dev)
+
+        stale_resp = client.post("/api/v1/irrigation/control/start", json={
+            "zone_id": zone.id,
+            "duration_minutes": 5
+        })
+        assert stale_resp.status_code == 409
+        assert "device is offline" in stale_resp.json()["error"]["message"]
+
+        # 2. Update heartbeat to fresh (<120s) but activate dry_run_fault
+        stale_dev.last_heartbeat_at = datetime.now(timezone.utc)
+        stale_dev.config = {"emergency_stop_active": False, "dry_run_fault": True}
+        db.commit()
+
+        dry_run_resp = client.post("/api/v1/irrigation/control/start", json={
+            "zone_id": zone.id,
+            "duration_minutes": 5
+        })
+        assert dry_run_resp.status_code == 409
+        assert "device safety interlock is not ready" in dry_run_resp.json()["error"]["message"] or "pump fault is active" in dry_run_resp.json()["error"]["message"]
+
+    finally:
+        db.close()
+
+
 

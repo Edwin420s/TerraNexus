@@ -2,7 +2,24 @@ import pytest
 from fastapi.testclient import TestClient
 from app.core.security import create_access_token
 from app.core.database import SessionLocal
-from app.models.entities import User, Membership
+from app.models.entities import User, Membership, Device
+from datetime import datetime, timezone
+
+@pytest.fixture(autouse=True)
+def refresh_online_devices():
+    """Ensure online test devices have fresh heartbeats within the 120s safety window."""
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        db.query(Device).filter(
+            Device.connection_status == "online",
+            Device.provisioning_status.in_(("active", "provisioned"))
+        ).update({"last_heartbeat_at": now})
+        db.commit()
+    except Exception:
+        pass
+    finally:
+        db.close()
 
 @pytest.fixture(scope="session")
 def admin_auth_token():

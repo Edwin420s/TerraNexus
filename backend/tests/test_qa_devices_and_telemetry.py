@@ -225,6 +225,11 @@ def test_tc_dev_005_mqtt_consumer_unknown_device_rejection_and_live_safety_persi
         # Duplicate event_id should succeed gracefully without re-persisting
         assert process_telemetry_message(valid_topic, valid_payload) is True
     finally:
+        if dev:
+            cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
+            cfg["emergency_stop_active"] = False
+            dev.config = cfg
+            db.commit()
         db.close()
 
 def test_tc_dev_006_device_provisioning_credential_lifecycle():

@@ -1,4 +1,5 @@
 import uuid
+import time
 from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
@@ -16,12 +17,13 @@ def test_device_lifecycle_and_telemetry():
 
     # 2. Ingest valid telemetry packet
     event_id = str(uuid.uuid4())
+    dynamic_seq = int(time.time() * 10) % 10000000 + 1000
     payload = {
         "event_id": event_id,
         "schema_version": "1.0",
         "device_id": device_id,
         "observed_at": datetime.now(timezone.utc).isoformat(),
-        "sequence": 101,
+        "sequence": dynamic_seq,
         "measurements": [
             {"type": "soil_moisture", "value": 31.4, "unit": "%", "depth_cm": 10.0},
             {"type": "ambient_temp", "value": 24.2, "unit": "°C"}
