@@ -184,3 +184,45 @@ def test_tc_dev_004_telemetry_deduplication_range_validation_and_no_fabricated_d
     m_resp2 = client.get(f"/api/v1/measurements?device_id={device_id}")
     assert len(m_resp2.json()) == 1
 
+def test_tc_dev_005_mqtt_consumer_unknown_device_rejection_and_live_safety_persistence():
+    """Verify MQTT consumer rejects unknown/mismatched devices and persists live E-stop state."""
+    from app.services.mqtt_consumer import process_telemetry_message
+    from app.core.database import SessionLocal
+    from app.models.entities import Device
+    import json
+
+    # 1. Unknown device UID must be rejected (return False)
+    unknown_topic = "tnx/a0000000-0000-0000-0000-000000000001/farm/c0000000-0000-0000-0000-000000000001/device/unknown-uid-9999/telemetry"
+    unknown_payload = json.dumps({"event_id": str(uuid.uuid4()), "measurements": [{"type": "soil_moisture", "value": 32.0}]})
+    assert process_telemetry_message(unknown_topic, unknown_payload) is False
+
+    # 2. Known provisioned device
+    db = SessionLocal()
+    try:
+        dev = db.query(Device).filter(Device.device_uid == "esp32-node-001").first()
+        assert dev is not None
+
+        # Telemetry containing emergency_stop = True and pump_running = True
+        telemetry_event_id = str(uuid.uuid4())
+        valid_topic = f"tnx/{dev.organisation_id}/farm/{dev.farm_id}/device/{dev.device_uid}/telemetry"
+        valid_payload = json.dumps({
+            "event_id": telemetry_event_id,
+            "emergency_stop": True,
+            "pump_running": False,
+            "battery": 88.5,
+            "measurements": [{"type": "soil_moisture", "value": 45.2, "unit": "%"}]
+        })
+        success = process_telemetry_message(valid_topic, valid_payload)
+        assert success is True
+
+        db.refresh(dev)
+        # Verify safety state was persisted in device.config
+        assert dev.config.get("emergency_stop_active") is True
+        assert dev.battery_level_pct == 88.5
+
+        # Duplicate event_id should succeed gracefully without re-persisting
+        assert process_telemetry_message(valid_topic, valid_payload) is True
+    finally:
+        db.close()
+
+
