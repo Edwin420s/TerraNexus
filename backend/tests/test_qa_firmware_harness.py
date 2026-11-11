@@ -45,7 +45,7 @@ class ESP32EdgeSimulator:
                 return False, "REPLAY_DETECTED_SEQUENCE_STALE"
             self.last_command_sequence = seq
 
-        action = cmd.get("action", "")
+        action = cmd.get("command_type") or cmd.get("action", "")
         if action == "reset_emergency_stop":
             return self.reset_emergency_stop()
 
@@ -53,11 +53,18 @@ class ESP32EdgeSimulator:
             return False, "EMERGENCY_STOP_ACTIVE"
 
         if action in ("turn_on", "start_irrigation", "start_closed_loop"):
-            duration = cmd.get("duration_sec", 300)
+            payload = cmd.get("payload") or {}
+            duration = (
+                payload.get("duration_seconds")
+                or payload.get("max_duration_seconds")
+                or cmd.get("max_duration_seconds")
+                or cmd.get("duration_sec", 300)
+            )
             if duration > self.max_watchdog_sec or duration <= 0:
                 return False, "RUNTIME_LIMIT_EXCEEDED"
             self.relay_state = True
             self.watchdog_timer = duration
+            return True, "closed_loop_executing" if action == "start_closed_loop" else "executing"
             return True, "executing"
         elif action in ("turn_off", "stop_irrigation"):
             self.relay_state = False
@@ -193,4 +200,45 @@ def test_tc_edge_005_emergency_stop_physical_reset_and_replay_protection():
     ok4, status4 = sim.process_command({"action": "turn_off", "sequence": 11})
     assert ok4 is True
     assert status4 == "completed"
+
+def test_tc_edge_006_canonical_command_schema_and_duration_contracts():
+    """Verify canonical command schema contract, duration fields, and sequence tracking."""
+    sim = ESP32EdgeSimulator(max_watchdog_sec=1800)
+
+    canonical_cmd = {
+        "schema_version": "1.0",
+        "command_id": "cmd-test-1234",
+        "sequence": 42,
+        "device_id": "esp32-node-01",
+        "command_type": "start_closed_loop",
+        "payload": {
+            "target_volume_litres": 1200.0,
+            "max_duration_seconds": 900
+        },
+        "max_duration_seconds": 900,
+        "dispatched_at": "2026-11-12T00:00:00Z",
+        "expires_at": "2026-11-12T00:16:00Z"
+    }
+
+    ok, status = sim.process_command(canonical_cmd)
+    assert ok is True
+    assert status == "closed_loop_executing"
+    assert sim.relay_state is True
+    assert sim.watchdog_timer == 900
+    assert sim.last_command_sequence == 42
+
+    # Reject duration exceeding hardware watchdog limit (1800s)
+    violating_cmd = {
+        "schema_version": "1.0",
+        "command_id": "cmd-test-1235",
+        "sequence": 43,
+        "device_id": "esp32-node-01",
+        "command_type": "start_irrigation",
+        "payload": {"duration_seconds": 3600},
+        "max_duration_seconds": 3600
+    }
+    v_ok, v_status = sim.process_command(violating_cmd)
+    assert v_ok is False
+    assert v_status == "RUNTIME_LIMIT_EXCEEDED"
+
 

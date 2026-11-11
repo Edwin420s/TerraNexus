@@ -1,11 +1,12 @@
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.auth import get_current_active_user, get_user_organisation_ids
 from app.models.entities import User, Device, Sensor, DeviceCommand, Farm
+from app.services.mqtt_publisher import publish_device_command
 
 router = APIRouter(prefix="", tags=["devices"])
 
@@ -320,22 +321,37 @@ def dispatch_command(device_id: str, req: CommandCreateRequest, user: User = Dep
     
     # Cap max execution duration
     max_duration = min(req.max_execution_duration_sec or 1800, 3600)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=max_duration + 60)
+
+    # Monotonic command sequence
+    current_seq = getattr(dev, "last_command_sequence", 0) or 0
+    cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
+    current_seq = max(current_seq, cfg.get("last_command_sequence", 0)) + 1
+    dev.last_command_sequence = current_seq
+    cfg["last_command_sequence"] = current_seq
+    dev.config = cfg
 
     cmd = DeviceCommand(
         organisation_id=dev.organisation_id,
         farm_id=dev.farm_id,
         device_id=dev.id,
+        sequence=current_seq,
         command_type=req.command_type,
         payload=req.payload or {},
         status="dispatched",
         priority=req.priority or 5,
         max_execution_duration_sec=max_duration,
-        dispatched_at=datetime.now(timezone.utc),
+        dispatched_at=now,
+        expires_at=expires_at,
         initiated_by=user.id
     )
     db.add(cmd)
     db.commit()
     db.refresh(cmd)
+
+    # Dispatch to hardware over MQTT
+    publish_device_command(dev, cmd)
     return CommandResponse(
         id=cmd.id,
         device_id=cmd.device_id,

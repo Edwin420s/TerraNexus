@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import engine, Base, SessionLocal
 from app.core.security import hash_password
@@ -12,6 +13,18 @@ from app.models.entities import (
 def init_database():
     """Create all tables and seed standard baseline records if not existing."""
     Base.metadata.create_all(bind=engine)
+    
+    # Safe migration for new columns on existing database files
+    with engine.begin() as conn:
+        for stmt in [
+            "ALTER TABLE device_commands ADD COLUMN sequence INTEGER DEFAULT 1",
+            "ALTER TABLE device_commands ADD COLUMN expires_at TIMESTAMP",
+            "ALTER TABLE devices ADD COLUMN last_command_sequence INTEGER DEFAULT 0",
+        ]:
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass
     
     db: Session = SessionLocal()
     try:

@@ -214,6 +214,7 @@ class Device(Base):
     config = Column(JSON, default=dict)
     last_telemetry_at = Column(DateTime(timezone=True), nullable=True)
     last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    last_command_sequence = Column(Integer, default=0, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -265,11 +266,13 @@ class DeviceCommand(Base):
     device_id = Column(String(36), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
     command_type = Column(String(50), nullable=False) # turn_on, turn_off, set_config, reboot
     payload = Column(JSON, default=dict, nullable=False)
+    sequence = Column(Integer, default=1, nullable=True)
     status = Column(String(30), default="queued", nullable=False) # queued, dispatched, acknowledged, executing, completed, failed, cancelled, expired
     priority = Column(Integer, default=5, nullable=False)
     preflight_checks = Column(JSON, default=dict)
     max_execution_duration_sec = Column(Integer, default=1800)
     dispatched_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     acknowledged_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(Text, nullable=True)

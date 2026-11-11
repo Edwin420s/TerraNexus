@@ -177,12 +177,12 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
             return;
         }
 
-        float targetLitres = doc["payload"]["target_volume_litres"] | 1000.0f;
+        float targetLitres = doc["payload"]["target_volume_litres"] | doc["target_volume_litres"] | 1000.0f;
         if (targetLitres <= 0.0f || targetLitres > 50000.0f) {
             publishCommandAck(commandId, "failed", "INVALID_TARGET_VOLUME_RANGE");
             return;
         }
-        int maxDurationSec = doc["payload"]["max_duration_sec"] | MAX_CONTINUOUS_RUN_SEC;
+        int maxDurationSec = doc["payload"]["max_duration_seconds"] | doc["payload"]["max_duration_sec"] | doc["max_duration_seconds"] | MAX_CONTINUOUS_RUN_SEC;
         if (maxDurationSec > MAX_CONTINUOUS_RUN_SEC) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
         if (maxDurationSec <= 0) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
 
@@ -211,7 +211,7 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
             return;
         }
 
-        int durationSec = doc["payload"]["duration_seconds"] | doc["payload"]["duration_sec"] | 300;
+        int durationSec = doc["payload"]["duration_seconds"] | doc["payload"]["duration_sec"] | doc["max_duration_seconds"] | 300;
         if (durationSec <= 0 || durationSec > MAX_CONTINUOUS_RUN_SEC) {
             publishCommandAck(commandId, "failed", "RUNTIME_LIMIT_EXCEEDED");
             return;
