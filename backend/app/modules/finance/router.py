@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
-from app.models.entities import User, AgentPayment
+from app.core.auth import get_current_active_user, get_current_user_organisation_id, get_user_organisation_ids
+from app.models.entities import User, AgentPayment, Membership
 from app.services.qvac_service import TetherWDKFinanceAgent
 
 router = APIRouter(prefix="/finance", tags=["finance"])
@@ -63,13 +63,32 @@ class PaymentResponse(BaseModel):
     approved_by: Optional[str]
     approved_at: Optional[str]
     transaction_hash: Optional[str]
+    ledger_mode: str = "testnet_sandbox_proposal"
     created_at: str
 
 class RejectPaymentRequest(BaseModel):
     reason: Optional[str] = "Operator declined payment request"
 
-def _get_org_id(user: User) -> str:
-    return user.memberships[0].organisation_id if user.memberships else "a0000000-0000-0000-0000-000000000001"
+def _get_org_id(user: User, db: Session) -> str:
+    org_id = get_current_user_organisation_id(user, db)
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have an active organisation membership"
+        )
+    return org_id
+
+def check_finance_role(user: User, org_id: str, db: Session):
+    mem = db.query(Membership).filter(
+        Membership.user_id == user.id,
+        Membership.organisation_id == org_id,
+        Membership.status == "active"
+    ).first()
+    if not mem or mem.role not in ("owner", "admin", "finance", "manager"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Financial operations require owner, admin, or finance role"
+        )
 
 @router.get("/wallet", response_model=WalletSummaryResponse)
 def get_wallet(user: User = Depends(get_current_active_user)):
@@ -85,7 +104,7 @@ def list_payments(
     db: Session = Depends(get_db)
 ):
     """List agentic finance disbursements and pending approval requests."""
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
     query = db.query(AgentPayment).filter(AgentPayment.organisation_id == org_id)
     if farm_id:
         query = query.filter(AgentPayment.farm_id == farm_id)
@@ -126,7 +145,7 @@ def prepare_payment(
     AI Agent prepares an automated procurement proposal.
     Enforces MANDATORY HUMAN APPROVAL by persisting in 'pending_approval' status.
     """
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
     payment = AgentPayment(
         organisation_id=org_id,
         farm_id=req.farm_id,
@@ -174,9 +193,12 @@ def approve_payment(
     """
     HUMAN OPERATOR APPROVAL GATE:
     Operator explicitly signs off on payment.
-    Broadcasting simulated Tether WDK on-chain transaction hash.
+    Requires owner, admin, or finance role within tenant organisation.
+    Broadcasts simulated testnet / sandbox transaction proposal.
     """
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
+    check_finance_role(user, org_id, db)
+
     payment = db.query(AgentPayment).filter(
         AgentPayment.id == payment_id,
         AgentPayment.organisation_id == org_id
@@ -187,13 +209,14 @@ def approve_payment(
     if payment.status != "pending_approval":
         raise HTTPException(status_code=400, detail=f"Payment already in '{payment.status}' state")
 
-    # Execute human approval
+    # Execute human approval with explicit testnet sandbox proposal labelling
     tx_hash = f"0x{uuid.uuid4().hex}{uuid.uuid4().hex}"[:66]
     now = datetime.now(timezone.utc)
     payment.status = "broadcasted"
     payment.approved_by = user.id
     payment.approved_at = now
     payment.transaction_hash = tx_hash
+    payment.description = f"{payment.description or ''} [Simulated Sandbox Ledger Proposal]".strip()
 
     db.commit()
     db.refresh(payment)
@@ -215,6 +238,7 @@ def approve_payment(
         approved_by=payment.approved_by,
         approved_at=payment.approved_at.isoformat() if payment.approved_at else None,
         transaction_hash=payment.transaction_hash,
+        ledger_mode="testnet_sandbox_proposal",
         created_at=payment.created_at.isoformat() if payment.created_at else ""
     )
 
@@ -226,7 +250,9 @@ def reject_payment(
     db: Session = Depends(get_db)
 ):
     """Human operator rejects proposed disbursement."""
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
+    check_finance_role(user, org_id, db)
+
     payment = db.query(AgentPayment).filter(
         AgentPayment.id == payment_id,
         AgentPayment.organisation_id == org_id
@@ -238,6 +264,30 @@ def reject_payment(
         raise HTTPException(status_code=400, detail=f"Payment already in '{payment.status}' state")
 
     payment.status = "rejected"
+    payment.description = f"{payment.description or ''} [Rejected: {req.reason}]".strip()
+    db.commit()
+    db.refresh(payment)
+
+    return PaymentResponse(
+        id=payment.id,
+        organisation_id=payment.organisation_id,
+        farm_id=payment.farm_id,
+        wallet_address=payment.wallet_address,
+        recipient_address=payment.recipient_address,
+        amount_usdt=float(payment.amount_usdt),
+        currency=payment.currency,
+        chain=payment.chain,
+        purpose=payment.purpose,
+        description=payment.description,
+        agent_reasoning=payment.agent_reasoning,
+        status=payment.status,
+        requires_human_approval=payment.requires_human_approval,
+        approved_by=payment.approved_by,
+        approved_at=payment.approved_at.isoformat() if payment.approved_at else None,
+        transaction_hash=payment.transaction_hash,
+        ledger_mode="testnet_sandbox_proposal",
+        created_at=payment.created_at.isoformat() if payment.created_at else ""
+    )
     payment.description = f"{payment.description or ''} [Rejected: {req.reason}]".strip()
     db.commit()
     db.refresh(payment)
