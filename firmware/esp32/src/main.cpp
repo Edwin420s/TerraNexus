@@ -23,6 +23,7 @@ volatile bool emergencyStopActive = false;
 bool pumpIsActive = false;
 unsigned long pumpStartTime = 0;
 unsigned long lastPumpStopTime = 0;
+unsigned long commandDurationMillis = MAX_CONTINUOUS_RUN_SEC * 1000UL;
 unsigned long lastTelemetryMillis = 0;
 unsigned long lastHeartbeatMillis = 0;
 unsigned long sequenceCounter = 0;
@@ -129,7 +130,9 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
         float targetLitres = doc["payload"]["target_volume_litres"] | 1000.0f;
         int maxDurationSec = doc["payload"]["max_duration_sec"] | MAX_CONTINUOUS_RUN_SEC;
         if (maxDurationSec > MAX_CONTINUOUS_RUN_SEC) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
+        if (maxDurationSec <= 0) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
 
+        commandDurationMillis = (unsigned long)maxDurationSec * 1000UL;
         targetVolumeLitres = targetLitres;
         deliveredVolumeLitres = 0.0f;
         flowPulseCount = 0;
@@ -159,6 +162,8 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
             publishCommandAck(commandId, "failed", "RUNTIME_LIMIT_EXCEEDED");
             return;
         }
+
+        commandDurationMillis = (unsigned long)durationSec * 1000UL;
 
         // Engage relays safely
         digitalWrite(PIN_RELAY_VALVE, LOW); // Open valve first
@@ -342,16 +347,16 @@ void loop() {
         }
     }
 
-    // 1. Hardware Safety Watchdog
+    // 1. Hardware Safety Watchdog & Command Duration Enforcement
     if (pumpIsActive) {
-        if ((now - pumpStartTime) >= (MAX_CONTINUOUS_RUN_SEC * 1000UL)) {
-            // Cutoff triggered by local hardware watchdog timer
+        if ((now - pumpStartTime) >= commandDurationMillis || (now - pumpStartTime) >= (MAX_CONTINUOUS_RUN_SEC * 1000UL)) {
+            // Cutoff triggered by command deadline or maximum hardware watchdog
             digitalWrite(PIN_RELAY_PUMP, HIGH);
             digitalWrite(PIN_RELAY_VALVE, HIGH);
             pumpIsActive = false;
             closedLoopActive = false;
             lastPumpStopTime = now;
-            publishCommandAck("watchdog_trip", "failed", "WATCHDOG_TIMEOUT_CUTOFF");
+            publishCommandAck("duration_watchdog_trip", "completed", "COMMAND_DURATION_OR_WATCHDOG_LIMIT_REACHED");
         }
     }
 
@@ -367,9 +372,6 @@ void loop() {
     // 3. Periodic Telemetry
     if (now - lastTelemetryMillis >= TELEMETRY_INTERVAL_MS) {
         lastTelemetryMillis = now;
-        sendTelemetry();
-    }
-}
         sendTelemetry();
     }
 }

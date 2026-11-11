@@ -4,10 +4,10 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
+from app.core.auth import get_current_active_user, get_user_organisation_ids
 from app.models.entities import (
     User, WaterSource, Pump, IrrigationZone, IrrigationPlan,
-    IrrigationPlanStep, IrrigationEvent, SafetyEvent
+    IrrigationPlanStep, IrrigationEvent, SafetyEvent, Farm, Device, Membership
 )
 from app.modules.irrigation.safety import validate_actuation, ActuationContext
 
@@ -70,6 +70,33 @@ class IrrigationEventResponse(BaseModel):
     ended_at: Optional[str]
     water_applied_litres: float
 
+def check_user_can_actuate(user: User, org_id: str, db: Session) -> bool:
+    mem = db.query(Membership).filter(
+        Membership.user_id == user.id,
+        Membership.organisation_id == org_id,
+        Membership.status == "active"
+    ).first()
+    if not mem:
+        return False
+    return mem.role in ("owner", "admin", "manager", "operator")
+
+def evaluate_device_preflight(zone: IrrigationZone, db: Session):
+    dev = None
+    if zone.solenoid_valve_device_id:
+        dev = db.query(Device).filter(Device.id == zone.solenoid_valve_device_id).first()
+    elif zone.pump and zone.pump.control_device_id:
+        dev = db.query(Device).filter(Device.id == zone.pump.control_device_id).first()
+    else:
+        dev = db.query(Device).filter(Device.farm_id == zone.farm_id).first()
+    
+    if dev:
+        device_trusted = dev.provisioning_status in ("active", "provisioned")
+        device_online = dev.connection_status == "online"
+    else:
+        device_trusted = True
+        device_online = True
+    return dev, device_trusted, device_online
+
 @router.get("/safety-capabilities")
 async def safety_capabilities():
     return {
@@ -81,7 +108,8 @@ async def safety_capabilities():
 
 @router.get("/sources", response_model=List[WaterSourceResponse])
 def list_water_sources(farm_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(WaterSource)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(WaterSource).filter(WaterSource.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(WaterSource.farm_id == farm_id)
     sources = query.all()
@@ -99,9 +127,14 @@ def list_water_sources(farm_id: Optional[str] = None, user: User = Depends(get_c
 
 @router.post("/sources", response_model=WaterSourceResponse)
 def create_water_source(req: WaterSourceCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+
     source = WaterSource(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
-        farm_id=req.farm_id,
+        organisation_id=farm.organisation_id,
+        farm_id=farm.id,
         name=req.name,
         source_type=req.source_type,
         capacity_litres=req.capacity_litres,
@@ -123,7 +156,8 @@ def create_water_source(req: WaterSourceCreateRequest, user: User = Depends(get_
 
 @router.get("/zones", response_model=List[ZoneResponse])
 def list_zones(farm_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(IrrigationZone)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(IrrigationZone).filter(IrrigationZone.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(IrrigationZone.farm_id == farm_id)
     zones = query.all()
@@ -143,9 +177,17 @@ def list_zones(farm_id: Optional[str] = None, user: User = Depends(get_current_a
 
 @router.post("/zones", response_model=ZoneResponse)
 def create_zone(req: ZoneCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+    source = db.query(WaterSource).filter(WaterSource.id == req.water_source_id, WaterSource.organisation_id.in_(user_org_ids)).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Water source not found or unauthorized")
+
     zone = IrrigationZone(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
-        farm_id=req.farm_id,
+        organisation_id=farm.organisation_id,
+        farm_id=farm.id,
         field_id=req.field_id,
         water_source_id=req.water_source_id,
         pump_id=req.pump_id,
@@ -173,22 +215,40 @@ def create_zone(req: ZoneCreateRequest, user: User = Depends(get_current_active_
 
 @router.post("/control/start", response_model=IrrigationEventResponse)
 def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id, IrrigationZone.organisation_id.in_(user_org_ids)).first()
     if not zone:
         raise HTTPException(status_code=404, detail="Irrigation zone not found")
     
     # 1. Execute Safety Preflight Interlocks (TNX-API-001 Section 49 & TNX-ARCH-001 Section 9)
     requested_runtime = req.duration_minutes * 60
+    actor_authorized = check_user_can_actuate(user, zone.organisation_id, db)
+    _, device_trusted, device_online = evaluate_device_preflight(zone, db)
+
+    source = db.query(WaterSource).filter(WaterSource.id == zone.water_source_id).first()
+    water_available = (
+        source is not None 
+        and source.status == "operational" 
+        and (source.current_level_litres is None or float(source.current_level_litres) > 0)
+    )
+
+    pump_fault = False
+    if zone.pump:
+        if zone.pump.power_source == "fault" or zone.pump.max_flow_rate_lpm <= 0:
+            pump_fault = True
+
+    max_runtime = zone.pump.max_continuous_runtime_sec if (zone.pump and zone.pump.max_continuous_runtime_sec) else 3600
+
     ctx = ActuationContext(
-        actor_authorized=True,
-        device_trusted=True,
-        device_online=True,
+        actor_authorized=actor_authorized,
+        device_trusted=device_trusted,
+        device_online=device_online,
         local_interlock_ready=True,
         emergency_stop_active=False,
-        water_available=True,
-        pump_fault=False,
+        water_available=water_available,
+        pump_fault=pump_fault,
         command_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        max_runtime_seconds=3600,
+        max_runtime_seconds=max_runtime,
         requested_runtime_seconds=requested_runtime
     )
     validate_actuation(ctx) # Will raise SafetyInterlockError if any interlock fails
@@ -388,12 +448,39 @@ def start_closed_loop_cycle(
     Initiates closed-loop volume-controlled irrigation with a 15s dry-run interlock.
     Dispatches hardware command to the edge microcontroller.
     """
-    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id, IrrigationZone.organisation_id.in_(user_org_ids)).first()
     if not zone:
         raise HTTPException(status_code=404, detail="Irrigation zone not found")
 
     if req.target_volume_litres <= 0:
         raise HTTPException(status_code=400, detail="Target volume must be positive")
+
+    # Safety Preflight Interlocks
+    actor_authorized = check_user_can_actuate(user, zone.organisation_id, db)
+    _, device_trusted, device_online = evaluate_device_preflight(zone, db)
+    source = db.query(WaterSource).filter(WaterSource.id == zone.water_source_id).first()
+    water_available = (
+        source is not None 
+        and source.status == "operational" 
+        and (source.current_level_litres is None or float(source.current_level_litres) > 0)
+    )
+    max_runtime = zone.pump.max_continuous_runtime_sec if (zone.pump and zone.pump.max_continuous_runtime_sec) else 1800
+    requested_runtime = min(1800, req.max_duration_seconds or 1800)
+
+    ctx = ActuationContext(
+        actor_authorized=actor_authorized,
+        device_trusted=device_trusted,
+        device_online=device_online,
+        local_interlock_ready=True,
+        emergency_stop_active=False,
+        water_available=water_available,
+        pump_fault=False,
+        command_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        max_runtime_seconds=max_runtime,
+        requested_runtime_seconds=requested_runtime
+    )
+    validate_actuation(ctx)
 
     # Safety check: if previous event still running on this zone, gracefully close it out
     active_events = db.query(IrrigationEvent).filter(
@@ -416,7 +503,7 @@ def start_closed_loop_cycle(
         irrigation_zone_id=zone.id,
         triggered_by="closed_loop_controller",
         status="running",
-        scheduled_duration_minutes=int((req.max_duration_seconds or 1800) / 60),
+        scheduled_duration_minutes=int(requested_runtime / 60),
         started_at=now,
         water_applied_litres=0.0
     )
@@ -429,7 +516,7 @@ def start_closed_loop_cycle(
         "event_id": event.id,
         "zone_id": zone.id,
         "target_volume_litres": req.target_volume_litres,
-        "max_duration_seconds": min(1800, req.max_duration_seconds or 1800),
+        "max_duration_seconds": requested_runtime,
         "dry_run_interlock_sec": 15,
         "min_expected_flow_lpm": 2.0,
         "hardware_watchdog_active": True,
@@ -485,18 +572,3 @@ def record_closed_loop_feedback(
         "current_flow_rate_lpm": req.current_flow_rate_lpm,
         "elapsed_seconds": req.elapsed_seconds
     }
-    if zone_id:
-        query = query.filter(IrrigationEvent.irrigation_zone_id == zone_id)
-    events = query.order_by(IrrigationEvent.created_at.desc()).limit(50).all()
-    return [
-        IrrigationEventResponse(
-            id=e.id,
-            zone_id=e.irrigation_zone_id,
-            status=e.status,
-            scheduled_duration_minutes=e.scheduled_duration_minutes,
-            actual_duration_seconds=e.actual_duration_seconds or 0,
-            started_at=e.started_at.isoformat() if e.started_at else None,
-            ended_at=e.ended_at.isoformat() if e.ended_at else None,
-            water_applied_litres=float(e.water_applied_litres or 0.0)
-        ) for e in events
-    ]

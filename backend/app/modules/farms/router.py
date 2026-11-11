@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
 from app.models.entities import User, Farm, Field, FieldObservation
 
 router = APIRouter(prefix="", tags=["farms"])
@@ -64,7 +64,8 @@ class ObservationResponse(BaseModel):
 
 @router.get("/farms", response_model=List[FarmResponse])
 def list_farms(user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    farms = db.query(Farm).all()
+    user_org_ids = get_user_organisation_ids(user, db)
+    farms = db.query(Farm).filter(Farm.organisation_id.in_(user_org_ids)).all()
     return [
         FarmResponse(
             id=f.id,
@@ -81,9 +82,7 @@ def list_farms(user: User = Depends(get_current_active_user), db: Session = Depe
 
 @router.post("/farms", response_model=FarmResponse)
 def create_farm(req: FarmCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    # Find user's organisation
-    membership = user.memberships[0] if user.memberships else None
-    org_id = membership.organisation_id if membership else "a0000000-0000-0000-0000-000000000001"
+    org_id = get_current_user_organisation_id(user, db)
     
     farm = Farm(
         organisation_id=org_id,
@@ -112,7 +111,8 @@ def create_farm(req: FarmCreateRequest, user: User = Depends(get_current_active_
 
 @router.get("/farms/{farm_id}", response_model=FarmResponse)
 def get_farm(farm_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    farm = db.query(Farm).filter(Farm.id == farm_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == farm_id, Farm.organisation_id.in_(user_org_ids)).first()
     if not farm:
         raise HTTPException(status_code=404, detail="Farm not found")
     return FarmResponse(
@@ -129,7 +129,8 @@ def get_farm(farm_id: str, user: User = Depends(get_current_active_user), db: Se
 
 @router.get("/fields", response_model=List[FieldResponse])
 def list_fields(farm_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(Field)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Field).filter(Field.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(Field.farm_id == farm_id)
     fields = query.all()
@@ -148,9 +149,10 @@ def list_fields(farm_id: Optional[str] = None, user: User = Depends(get_current_
 
 @router.post("/fields", response_model=FieldResponse)
 def create_field(req: FieldCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    farm = db.query(Farm).filter(Farm.id == req.farm_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
     if not farm:
-        raise HTTPException(status_code=404, detail="Parent farm not found")
+        raise HTTPException(status_code=404, detail="Parent farm not found or unauthorized")
     
     field = Field(
         organisation_id=farm.organisation_id,
@@ -177,7 +179,8 @@ def create_field(req: FieldCreateRequest, user: User = Depends(get_current_activ
 
 @router.get("/fields/{field_id}", response_model=FieldResponse)
 def get_field(field_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    field = db.query(Field).filter(Field.id == field_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    field = db.query(Field).filter(Field.id == field_id, Field.organisation_id.in_(user_org_ids)).first()
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     return FieldResponse(
@@ -193,6 +196,10 @@ def get_field(field_id: str, user: User = Depends(get_current_active_user), db: 
 
 @router.get("/fields/{field_id}/observations", response_model=List[ObservationResponse])
 def get_field_observations(field_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    field = db.query(Field).filter(Field.id == field_id, Field.organisation_id.in_(user_org_ids)).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
     obs = db.query(FieldObservation).filter(FieldObservation.field_id == field_id).order_by(FieldObservation.observed_at.desc()).all()
     return [
         ObservationResponse(
@@ -208,7 +215,8 @@ def get_field_observations(field_id: str, user: User = Depends(get_current_activ
 
 @router.post("/fields/{field_id}/observations", response_model=ObservationResponse)
 def create_field_observation(field_id: str, req: ObservationCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    field = db.query(Field).filter(Field.id == field_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    field = db.query(Field).filter(Field.id == field_id, Field.organisation_id.in_(user_org_ids)).first()
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
     

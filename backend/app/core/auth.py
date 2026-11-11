@@ -13,10 +13,6 @@ def get_current_user(
     db: Session = Depends(get_db)
 ) -> User:
     if not credentials:
-        # Check if default test admin exists for local developer experience
-        admin = db.query(User).filter(User.email == "admin@terranexus.org").first()
-        if admin:
-            return admin
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication credentials required",
@@ -40,6 +36,24 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+def get_user_organisation_ids(user: User, db: Session) -> List[str]:
+    """Returns all active organisation IDs associated with the user."""
+    memberships = db.query(Membership).filter(
+        Membership.user_id == user.id,
+        Membership.status == "active"
+    ).all()
+    return [m.organisation_id for m in memberships]
+
+def get_current_user_organisation_id(user: User, db: Session) -> str:
+    """Returns the primary organisation ID for the user, raising 403 if none found."""
+    org_ids = get_user_organisation_ids(user, db)
+    if not org_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not affiliated with any active organisation"
+        )
+    return org_ids[0]
 
 def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
     if current_user.account_status != "active":

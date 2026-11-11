@@ -19,6 +19,30 @@ TerraNexus is structured as a **modular monolith** backed by an authoritative sp
 
 ---
 
+## System Capability & Verification Status Matrix
+
+To maintain rigorous engineering honesty and production transparency, TerraNexus strictly classifies capabilities into four verified operational tiers:
+
+| Capability Tier | Feature / Subsystem | Implementation Status | Verification Evidence |
+| :--- | :--- | :--- | :--- |
+| **Verified in Software** | Modular Backend Architecture | 15 Domain modules, 87 tables, FastAPI | 100% pytest pass (80 tests), SQLite & PostgreSQL |
+| **Verified in Software** | Authentication & RBAC | PBKDF2 hashing, Bearer JWT, Zero bypass | Unauthenticated requests strictly return HTTP 401 |
+| **Verified in Software** | Multi-Tenant Organisation Scoping | User &rarr; Org &rarr; Farm &rarr; Field &rarr; Device &rarr; Zone | Tenant A isolated from Tenant B (HTTP 404/403) |
+| **Verified in Software** | Dynamic FAO-56 Soil Continuum | Sand/Loam/Clay bounds, phenological $K_c$, TAW/RAW | Validated via `agronomic_engine.py` mathematical suite |
+| **Verified in Software** | Closed-Loop Actuation Protocol | Flow rate tracking, pulse volume accumulation | Tested via feedback loop, 15s dry-run cutoff verified |
+| **Verified in Software** | Canonical Telemetry & Ingestion | Pydantic UUID schemas, quality scoring | Tested via batch API and MQTT broker bridge |
+| **Verified in Software** | Idempotent Offline Sync Engine | UUID deduplication, domain conflict resolution | Verified with duplicate operations & versioned audits |
+| **Verified in Software** | Kirinyaga County Tomato Pilot | Dual-plot telemetry, productivity metrics ($m^3/\text{t}$) | Validated via pilot metrics and water efficiency API |
+| **Verified in Software** | Tether WDK Finance Vault | Self-custodial USD₮, mandatory human approval gate | Autonomous transfers blocked; explicit signature required |
+| **Verified Offline Neural AI**| Local QVAC Neural Inference | Real `QWEN3_600M_INST_Q4` / `Qwen3-0.6B-Q4_0.gguf` | 37.18 tokens/s, 199.6ms first token, zero mock fallbacks |
+| **Verified Agronomic Rules**  | Agronomic Reasoning | Dynamic FAO-56 continuum rule-based engine | Labeled explicitly as `rule_based_fao56` |
+| **Implemented Firmware**      | ESP32 C++ PlatformIO Controller | Pulse ISR, E-stop ISR, watchdog timer, deadlines | Software-mock verified via `test_qa_firmware_harness.py` (Bench rig pending) |
+| **Prototype / Edge Stubs**    | Offline Vector Search (RAG) | Deterministic token frequency similarity | `simulated_edge_stub` (lightweight edge search) |
+| **Prototype / Edge Stubs**    | Speech Synthesis & ASR | Audio protocol payload stubs | `simulated_edge_stub` (speech protocol validation) |
+| **Roadmap / Planned**         | Physical Kirinyaga Field Rig | Solar pump, mechanical pulse flow meter, drip line | Physical installation scheduled for pilot phase |
+
+---
+
 ## Setup & Quick Start
 
 ### Prerequisites

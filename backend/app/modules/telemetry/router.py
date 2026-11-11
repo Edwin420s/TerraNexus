@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
+from app.core.auth import get_current_active_user, get_user_organisation_ids
 from app.models.entities import User, Device, Sensor, Measurement
 from app.modules.telemetry.schemas import TelemetryEnvelope, TelemetryAccepted
 
@@ -27,9 +27,20 @@ async def ingest_telemetry(payload: TelemetryEnvelope, db: Session = Depends(get
     dev_id_str = str(payload.device_id)
     device = db.query(Device).filter((Device.id == dev_id_str) | (Device.device_uid == dev_id_str)).first()
     
-    org_id = device.organisation_id if device else "a0000000-0000-0000-0000-000000000001"
-    farm_id = device.farm_id if device else "c0000000-0000-0000-0000-000000000001"
-    field_id = device.field_id if device else None
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown or unprovisioned device"
+        )
+    if device.provisioning_status not in ("active", "provisioned"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Device is inactive or revoked"
+        )
+
+    org_id = device.organisation_id
+    farm_id = device.farm_id
+    field_id = device.field_id
     
     # Persist measurements
     for m in payload.measurements:
@@ -88,7 +99,8 @@ def list_measurements(
     user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Measurement)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Measurement).filter(Measurement.organisation_id.in_(user_org_ids))
     if field_id:
         query = query.filter(Measurement.field_id == field_id)
     if device_id:

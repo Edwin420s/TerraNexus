@@ -4,8 +4,8 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
-from app.models.entities import User, ClientDevice, SyncOperation, SyncConflict, Task, FieldObservation
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
+from app.models.entities import User, ClientDevice, SyncOperation, SyncConflict, Task, FieldObservation, Field
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -47,11 +47,14 @@ class SyncPullResponse(BaseModel):
 
 @router.post("/push", response_model=SyncPushResponse)
 def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    org_id = get_current_user_organisation_id(user, db)
+
     # Find or register client device
     client_dev = db.query(ClientDevice).filter(ClientDevice.client_uuid == req.client_uuid).first()
     if not client_dev:
         client_dev = ClientDevice(
-            organisation_id="a0000000-0000-0000-0000-000000000001",
+            organisation_id=org_id,
             user_id=user.id,
             client_uuid=req.client_uuid,
             device_model=req.device_model,
@@ -84,14 +87,14 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
         resolution_strategy = "server_wins"
 
         if op.entity_name == "task" and op.operation_type == "update":
-            existing = db.query(Task).filter(Task.id == op.entity_id).first()
+            existing = db.query(Task).filter(Task.id == op.entity_id, Task.organisation_id.in_(user_org_ids)).first()
             if existing and existing.updated_at and existing.updated_at > client_ts:
                 is_conflict = True
                 resolution_strategy = "server_wins"
 
         elif op.entity_name == "field_observation" and op.operation_type == "update":
             # Versioned observation history: preserve previous observation as an audit record
-            existing_obs = db.query(FieldObservation).filter(FieldObservation.id == op.entity_id).first()
+            existing_obs = db.query(FieldObservation).filter(FieldObservation.id == op.entity_id, FieldObservation.organisation_id.in_(user_org_ids)).first()
             if existing_obs:
                 is_conflict = True
                 resolution_strategy = "versioned_revision"
@@ -132,10 +135,15 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
         else:
             # Apply mutation to target entity
             if op.entity_name == "field_observation" and op.operation_type == "create":
+                target_field_id = op.payload.get("field_id")
+                if not target_field_id:
+                    target_field = db.query(Field).filter(Field.organisation_id.in_(user_org_ids)).first()
+                    target_field_id = target_field.id if target_field else None
+                
                 obs = FieldObservation(
                     id=op.entity_id,
-                    organisation_id="a0000000-0000-0000-0000-000000000001",
-                    field_id=op.payload.get("field_id", "d0000000-0000-0000-0000-000000000001"),
+                    organisation_id=org_id,
+                    field_id=target_field_id,
                     observed_by=user.id,
                     observation_type=op.payload.get("observation_type", "scouting"),
                     description=op.payload.get("description", "Offline sync observation"),
@@ -144,7 +152,7 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                 db.add(obs)
                 applied += 1
             elif op.entity_name == "task" and op.operation_type == "update":
-                existing = db.query(Task).filter(Task.id == op.entity_id).first()
+                existing = db.query(Task).filter(Task.id == op.entity_id, Task.organisation_id.in_(user_org_ids)).first()
                 if existing:
                     if "status" in op.payload:
                         existing.status = op.payload["status"]
@@ -168,11 +176,12 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
 
 @router.post("/pull", response_model=SyncPullResponse)
 def sync_pull(req: SyncPullRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
     client_dev = db.query(ClientDevice).filter(ClientDevice.client_uuid == req.client_uuid).first()
     new_cursor = (req.since_cursor or 0) + 1
     
-    # Retrieve modified tasks since cursor
-    tasks = db.query(Task).order_by(Task.updated_at.desc()).limit(20).all()
+    # Retrieve modified tasks scoped to user's organisations
+    tasks = db.query(Task).filter(Task.organisation_id.in_(user_org_ids)).order_by(Task.updated_at.desc()).limit(20).all()
     changes = [
         {
             "entity_name": "task",

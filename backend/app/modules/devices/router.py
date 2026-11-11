@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
+from app.core.auth import get_current_active_user, get_user_organisation_ids
 from app.models.entities import User, Device, Sensor, DeviceCommand, Farm
 
 router = APIRouter(prefix="", tags=["devices"])
@@ -76,7 +76,8 @@ class CommandAckRequest(BaseModel):
 
 @router.get("/devices", response_model=List[DeviceResponse])
 def list_devices(farm_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(Device)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Device).filter(Device.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(Device.farm_id == farm_id)
     devices = query.all()
@@ -101,9 +102,10 @@ def list_devices(farm_id: Optional[str] = None, user: User = Depends(get_current
 
 @router.post("/devices", response_model=DeviceResponse)
 def register_device(req: DeviceCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    farm = db.query(Farm).filter(Farm.id == req.farm_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
     if not farm:
-        raise HTTPException(status_code=404, detail="Farm not found")
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
     
     device = Device(
         organisation_id=farm.organisation_id,
@@ -139,7 +141,8 @@ def register_device(req: DeviceCreateRequest, user: User = Depends(get_current_a
 
 @router.get("/devices/{device_id}", response_model=DeviceResponse)
 def get_device(device_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    dev = db.query(Device).filter(Device.id == device_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
     return DeviceResponse(
@@ -161,7 +164,8 @@ def get_device(device_id: str, user: User = Depends(get_current_active_user), db
 
 @router.post("/devices/{device_id}/provision")
 def provision_device(device_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    dev = db.query(Device).filter(Device.id == device_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
     dev.provisioning_status = "active"
@@ -177,7 +181,8 @@ def provision_device(device_id: str, user: User = Depends(get_current_active_use
 
 @router.get("/sensors", response_model=List[SensorResponse])
 def list_sensors(device_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(Sensor)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Sensor).join(Device).filter(Device.organisation_id.in_(user_org_ids))
     if device_id:
         query = query.filter(Sensor.device_id == device_id)
     sensors = query.all()
@@ -196,9 +201,10 @@ def list_sensors(device_id: Optional[str] = None, user: User = Depends(get_curre
 
 @router.post("/sensors", response_model=SensorResponse)
 def register_sensor(req: SensorCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    dev = db.query(Device).filter(Device.id == req.device_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    dev = db.query(Device).filter(Device.id == req.device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
-        raise HTTPException(status_code=404, detail="Parent device not found")
+        raise HTTPException(status_code=404, detail="Parent device not found or unauthorized")
     
     sensor = Sensor(
         device_id=dev.id,
@@ -225,6 +231,10 @@ def register_sensor(req: SensorCreateRequest, user: User = Depends(get_current_a
 
 @router.get("/devices/{device_id}/commands", response_model=List[CommandResponse])
 def list_device_commands(device_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
+    if not dev:
+        raise HTTPException(status_code=404, detail="Device not found")
     cmds = db.query(DeviceCommand).filter(DeviceCommand.device_id == device_id).order_by(DeviceCommand.created_at.desc()).all()
     return [
         CommandResponse(
@@ -242,7 +252,8 @@ def list_device_commands(device_id: str, user: User = Depends(get_current_active
 
 @router.post("/devices/{device_id}/commands", response_model=CommandResponse)
 def dispatch_command(device_id: str, req: CommandCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    dev = db.query(Device).filter(Device.id == device_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
     
