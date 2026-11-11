@@ -7,14 +7,22 @@ from datetime import datetime, timezone
 
 @pytest.fixture(autouse=True)
 def refresh_online_devices():
-    """Ensure online test devices have fresh heartbeats within the 120s safety window."""
+    """Ensure online test devices have fresh heartbeats within the 120s safety window and pristine state."""
     db = SessionLocal()
     try:
+        from sqlalchemy.orm.attributes import flag_modified
         now = datetime.now(timezone.utc)
-        db.query(Device).filter(
+        devices = db.query(Device).filter(
             Device.connection_status == "online",
             Device.provisioning_status.in_(("active", "provisioned"))
-        ).update({"last_heartbeat_at": now})
+        ).all()
+        for dev in devices:
+            dev.last_heartbeat_at = now
+            if isinstance(dev.config, dict):
+                dev.config.pop("last_telemetry_sequence", None)
+                dev.config.pop("device_token", None)
+                dev.config.pop("emergency_stop_active", None)
+                flag_modified(dev, "config")
         db.commit()
     except Exception:
         pass

@@ -99,12 +99,7 @@ async def ingest_telemetry(
     cfg = dict(device.config) if isinstance(device.config, dict) else {}
     expected_token = cfg.get("device_token")
     if expected_token:
-        provided_token = x_device_token
-        if not provided_token and authorization:
-            if authorization.startswith("Bearer "):
-                provided_token = authorization[7:]
-            else:
-                provided_token = authorization
+        provided_token = x_device_token or (authorization[7:] if authorization and authorization.startswith("Bearer ") else authorization)
         if not provided_token or provided_token != expected_token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
