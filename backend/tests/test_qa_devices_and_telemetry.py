@@ -225,4 +225,44 @@ def test_tc_dev_005_mqtt_consumer_unknown_device_rejection_and_live_safety_persi
     finally:
         db.close()
 
+def test_tc_dev_006_device_provisioning_credential_lifecycle():
+    """Verify device-specific token generation, rotation, and revocation lifecycle."""
+    farms = client.get("/api/v1/farms").json()
+    farm_id = farms[0]["id"]
+
+    reg_resp = client.post("/api/v1/devices", json={
+        "farm_id": farm_id,
+        "device_uid": f"esp32-cred-{uuid.uuid4().hex[:6]}",
+        "name": "Secure Node",
+        "device_type": "esp32_sensor_node",
+        "hardware_version": "v1.0",
+        "firmware_version": "1.0.0"
+    })
+    dev_id = reg_resp.json()["id"]
+
+    # Provision device -> generates unique token and sets status to pending_first_connect
+    prov_resp = client.post(f"/api/v1/devices/{dev_id}/provision")
+    assert prov_resp.status_code == 200
+    pdata = prov_resp.json()
+    assert "device_token" in pdata
+    assert pdata["device_token"].startswith("tnx_dev_")
+    assert pdata["connection_status"] == "pending_first_connect"
+    old_token = pdata["device_token"]
+
+    # Rotate credentials
+    rot_resp = client.post(f"/api/v1/devices/{dev_id}/rotate-credentials")
+    assert rot_resp.status_code == 200
+    rdata = rot_resp.json()
+    assert rdata["device_token"] != old_token
+
+    # Revoke device
+    rev_resp = client.post(f"/api/v1/devices/{dev_id}/revoke")
+    assert rev_resp.status_code == 200
+    assert rev_resp.json()["status"] == "revoked"
+
+    # Cannot rotate on revoked device
+    fail_rot = client.post(f"/api/v1/devices/{dev_id}/rotate-credentials")
+    assert fail_rot.status_code == 400
+
+
 

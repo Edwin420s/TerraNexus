@@ -168,15 +168,72 @@ def provision_device(device_id: str, user: User = Depends(get_current_active_use
     dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
+    
+    # Generate unique cryptographic device access token & MQTT credentials
+    import secrets
+    device_token = f"tnx_dev_{secrets.token_urlsafe(32)}"
+    mqtt_password = f"tnx_mqtt_{secrets.token_urlsafe(24)}"
+
+    cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
+    cfg["device_token"] = device_token
+    cfg["mqtt_username"] = dev.device_uid
+    cfg["mqtt_password"] = mqtt_password
+    dev.config = cfg
+
     dev.provisioning_status = "active"
-    dev.connection_status = "online"
+    dev.connection_status = "pending_first_connect"
     db.commit()
     return {
         "status": "provisioned",
         "device_id": dev.id,
         "device_uid": dev.device_uid,
+        "device_token": device_token,
+        "mqtt_username": dev.device_uid,
+        "mqtt_password": mqtt_password,
+        "connection_status": dev.connection_status,
         "mqtt_topic_telemetry": f"tnx/{dev.organisation_id}/farm/{dev.farm_id}/device/{dev.device_uid}/telemetry",
         "mqtt_topic_commands": f"tnx/{dev.organisation_id}/farm/{dev.farm_id}/device/{dev.device_uid}/commands"
+    }
+
+@router.post("/devices/{device_id}/revoke")
+def revoke_device(device_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
+    if not dev:
+        raise HTTPException(status_code=404, detail="Device not found")
+    
+    dev.provisioning_status = "revoked"
+    dev.connection_status = "offline"
+    cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
+    cfg.pop("device_token", None)
+    cfg.pop("mqtt_password", None)
+    dev.config = cfg
+    db.commit()
+    return {"status": "revoked", "device_id": dev.id}
+
+@router.post("/devices/{device_id}/rotate-credentials")
+def rotate_device_credentials(device_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
+    if not dev:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if dev.provisioning_status != "active":
+        raise HTTPException(status_code=400, detail="Cannot rotate credentials for inactive or revoked device")
+
+    import secrets
+    device_token = f"tnx_dev_{secrets.token_urlsafe(32)}"
+    mqtt_password = f"tnx_mqtt_{secrets.token_urlsafe(24)}"
+    cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
+    cfg["device_token"] = device_token
+    cfg["mqtt_password"] = mqtt_password
+    dev.config = cfg
+    db.commit()
+    return {
+        "status": "credentials_rotated",
+        "device_id": dev.id,
+        "device_token": device_token,
+        "mqtt_username": dev.device_uid,
+        "mqtt_password": mqtt_password
     }
 
 @router.get("/sensors", response_model=List[SensorResponse])
