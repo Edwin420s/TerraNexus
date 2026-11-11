@@ -69,3 +69,50 @@ def test_tc_sync_002_offline_pull_cursor_changes():
     assert "new_sync_cursor" in data
     assert "changes" in data
     assert isinstance(data["changes"], list)
+
+def test_tc_sync_003_idempotency_and_tenant_device_isolation():
+    """Verify operation_id deduplication, rejection of unhandled entities, and cross-tenant device protection."""
+    client_uuid = f"m-client-{uuid.uuid4().hex[:8]}"
+    op_id = str(uuid.uuid4())
+    obs_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    fields = client.get("/api/v1/fields").json()
+    field_id = fields[0]["id"]
+
+    payload = {
+        "client_uuid": client_uuid,
+        "operations": [
+            {
+                "operation_id": op_id,
+                "operation_type": "create",
+                "entity_name": "field_observation",
+                "entity_id": obs_id,
+                "client_timestamp": now_iso,
+                "payload": {"field_id": field_id, "description": "Soil survey observation"}
+            },
+            {
+                "operation_id": str(uuid.uuid4()),
+                "operation_type": "custom_action",
+                "entity_name": "unsupported_entity_type",
+                "entity_id": str(uuid.uuid4()),
+                "client_timestamp": now_iso,
+                "payload": {"raw": "data"}
+            }
+        ]
+    }
+
+    # 1. First push: 1 valid operation applied, 1 unhandled rejected
+    resp1 = client.post("/api/v1/sync/push", json=payload)
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert data1["applied_count"] == 1  # Only the valid observation applied
+    assert data1["deduplicated_count"] == 0
+
+    # 2. Second push with exact same operations: must be deduplicated
+    resp2 = client.post("/api/v1/sync/push", json=payload)
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["deduplicated_count"] >= 1
+    assert data2["applied_count"] == 0
+

@@ -52,7 +52,10 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
 
     # Find or register client device
     client_dev = db.query(ClientDevice).filter(ClientDevice.client_uuid == req.client_uuid).first()
-    if not client_dev:
+    if client_dev:
+        if client_dev.organisation_id not in user_org_ids:
+            raise HTTPException(status_code=403, detail="Client device belongs to a different organisation")
+    else:
         client_dev = ClientDevice(
             organisation_id=org_id,
             user_id=user.id,
@@ -70,14 +73,14 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
     for op in req.operations:
         client_ts = datetime.fromisoformat(op.client_timestamp) if op.client_timestamp else datetime.now(timezone.utc)
         
-        # 1. Idempotency Check: Verify if operation_id or event_id already applied
+        # 1. Idempotency Check: Verify if operation_id or entity_id already applied
         existing_op = db.query(SyncOperation).filter(
             SyncOperation.client_device_id == client_dev.id,
-            SyncOperation.entity_id == op.entity_id,
-            SyncOperation.operation_type == op.operation_type
+            (SyncOperation.id == op.operation_id) |
+            ((SyncOperation.entity_id == op.entity_id) & (SyncOperation.operation_type == "create"))
         ).first()
 
-        if existing_op and op.operation_type == "create":
+        if existing_op:
             # Idempotent deduplication: already ingested, do not duplicate
             deduplicated += 1
             continue
@@ -104,6 +107,7 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
             resolution_strategy = "append_only"
 
         sync_op = SyncOperation(
+            id=op.operation_id if op.operation_id else None,
             client_device_id=client_dev.id,
             operation_type=op.operation_type,
             entity_name=op.entity_name,
@@ -157,8 +161,22 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                     if "status" in op.payload:
                         existing.status = op.payload["status"]
                 applied += 1
-            else:
+            elif op.entity_name == "task" and op.operation_type == "create":
+                task = Task(
+                    id=op.entity_id,
+                    organisation_id=org_id,
+                    title=op.payload.get("title", "Offline Task"),
+                    status=op.payload.get("status", "pending"),
+                    priority=op.payload.get("priority", "medium")
+                )
+                db.add(task)
                 applied += 1
+            elif op.entity_name in ("field_observation", "task") and op.operation_type in ("delete", "archive"):
+                applied += 1
+            else:
+                # Unsupported/unhandled mutation: do not falsely report applied
+                sync_op.status = "rejected"
+                sync_op.conflict_reason = f"Unsupported entity or operation: {op.entity_name}:{op.operation_type}"
 
     client_dev.sync_cursor += len(req.operations)
     client_dev.last_sync_at = datetime.now(timezone.utc)
@@ -178,6 +196,8 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
 def sync_pull(req: SyncPullRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
     user_org_ids = get_user_organisation_ids(user, db)
     client_dev = db.query(ClientDevice).filter(ClientDevice.client_uuid == req.client_uuid).first()
+    if client_dev and client_dev.organisation_id not in user_org_ids:
+        raise HTTPException(status_code=403, detail="Client device belongs to a different organisation")
     new_cursor = (req.since_cursor or 0) + 1
     
     # Retrieve modified tasks scoped to user's organisations
