@@ -287,9 +287,10 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
 
 @router.post("/control/stop", response_model=IrrigationEventResponse)
 def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id, IrrigationZone.organisation_id.in_(user_org_ids)).first()
     if not zone:
-        raise HTTPException(status_code=404, detail="Irrigation zone not found")
+        raise HTTPException(status_code=404, detail="Irrigation zone not found or unauthorized")
     
     zone.is_active = False
     if zone.pump:
@@ -347,7 +348,8 @@ def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current
 
 @router.get("/history", response_model=List[IrrigationEventResponse])
 def list_irrigation_history(zone_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(IrrigationEvent)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(IrrigationEvent).filter(IrrigationEvent.organisation_id.in_(user_org_ids))
     if zone_id:
         query = query.filter(IrrigationEvent.irrigation_zone_id == zone_id)
     events = query.order_by(IrrigationEvent.created_at.desc()).limit(50).all()
@@ -400,9 +402,10 @@ def plan_closed_loop_irrigation(
     Computes an exact closed-loop irrigation plan by evaluating soil depletion,
     hydraulic boundaries (TAW/RAW), and required gross volume (Litres).
     """
-    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id, IrrigationZone.organisation_id.in_(user_org_ids)).first()
     if not zone:
-        raise HTTPException(status_code=404, detail="Irrigation zone not found")
+        raise HTTPException(status_code=404, detail="Irrigation zone not found or unauthorized")
 
     from app.services.agronomic_engine import calculate_dynamic_fao56, AgronomicAssessmentRequest
 
@@ -533,9 +536,10 @@ def record_closed_loop_feedback(
     Ingests real-time flow telemetry from pulse-flow sensor and handles
     target volume completion or 15-second dry-run emergency cutoff.
     """
-    event = db.query(IrrigationEvent).filter(IrrigationEvent.id == req.event_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    event = db.query(IrrigationEvent).filter(IrrigationEvent.id == req.event_id, IrrigationEvent.organisation_id.in_(user_org_ids)).first()
     if not event:
-        raise HTTPException(status_code=404, detail="Irrigation event not found")
+        raise HTTPException(status_code=404, detail="Irrigation event not found or unauthorized")
 
     zone = event.zone
     now = datetime.now(timezone.utc)

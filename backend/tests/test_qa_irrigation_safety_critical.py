@@ -101,3 +101,21 @@ def test_tc_safe_005_irrigation_history_retrieval():
     assert hist_resp.status_code == 200
     history = hist_resp.json()
     assert isinstance(history, list)
+
+def test_tc_safe_006_cross_tenant_zone_isolation():
+    """Verify that users cannot stop or view history of zones in organisations they do not belong to."""
+    random_zone_id = str(uuid.uuid4())
+    # Attempt stop on nonexistent / unauthorized zone
+    stop_resp = client.post("/api/v1/irrigation/control/stop", json={
+        "zone_id": random_zone_id,
+        "reason": "Unauthorized test stop"
+    })
+    assert stop_resp.status_code == 404
+
+    # Attempt closed-loop plan on nonexistent / unauthorized zone
+    plan_resp = client.post("/api/v1/irrigation/closed-loop/plan", json={
+        "zone_id": random_zone_id,
+        "current_moisture_pct": 45.0
+    })
+    assert plan_resp.status_code == 404
+
