@@ -80,7 +80,7 @@
   - Field scouting screen, task checklist screen, and emergency pump cutoff screen (`App.tsx`).
 
 ### 6. Verification & Automated Tests (`backend/tests/`)
-- 21 comprehensive automated test suites (85+ test cases) passing with 100% success rate:
+- 21 comprehensive automated test suites (91 test cases) passing with 100% success rate:
   - `test_auth_and_farms.py`: Core health endpoints, JWT authentication, farm and field provisioning.
   - `test_devices_and_telemetry.py`: Device provisioning, canonical telemetry persistence into `measurements`, remote command dispatch, and device acknowledgements.
   - `test_irrigation_and_operations.py`: Irrigation zones, safe manual actuation preflight check, run completion, task status update.
