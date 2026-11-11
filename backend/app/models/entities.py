@@ -387,7 +387,7 @@ class IrrigationEvent(Base):
     scheduled_duration_minutes = Column(Integer, nullable=False)
     actual_duration_seconds = Column(Integer, default=0)
     water_applied_litres = Column(Numeric(12, 2), default=0.0)
-    started_at = Column(DateTime(timezone=True), default=utc_now)
+    started_at = Column(DateTime(timezone=True), nullable=True)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     abort_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)

@@ -278,26 +278,21 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
     )
     validate_actuation(ctx) # Will raise SafetyInterlockError if any interlock fails
 
-    # 2. Update Zone & Pump State
-    zone.is_active = True
-    if zone.pump:
-        zone.pump.is_running = True
-        zone.pump.last_started_at = datetime.now(timezone.utc)
-    
-    # 3. Create Irrigation Event Record
+    # 2. Irrigation Event Record (Initial status: dispatched awaiting hardware confirmation)
+    now = datetime.now(timezone.utc)
     event = IrrigationEvent(
         organisation_id=zone.organisation_id,
         farm_id=zone.farm_id,
         irrigation_zone_id=zone.id,
         triggered_by=req.triggered_by or "manual_user",
         user_id=user.id,
-        status="running",
+        status="dispatched",
         scheduled_duration_minutes=req.duration_minutes,
-        started_at=datetime.now(timezone.utc)
+        started_at=None
     )
     db.add(event)
 
-    # 4. Dispatch Command to Hardware Device via MQTT
+    # 3. Dispatch Command to Hardware Device via MQTT
     if dev:
         cmd = DeviceCommand(
             organisation_id=zone.organisation_id,
@@ -320,13 +315,19 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
                 "emergency_stop_active": emergency_stop_active
             },
             max_execution_duration_sec=requested_runtime,
-            dispatched_at=datetime.now(timezone.utc),
+            dispatched_at=now,
+            expires_at=now + timedelta(seconds=requested_runtime + 60),
             initiated_by=user.id
         )
         db.add(cmd)
         db.commit()
         from app.services.mqtt_publisher import publish_device_command
-        publish_device_command(dev, cmd)
+        dispatched = publish_device_command(dev, cmd)
+        if not dispatched:
+            event.status = "failed"
+            event.abort_reason = "MQTT_DISPATCH_UNREACHABLE"
+            db.commit()
+            raise HTTPException(status_code=502, detail="Failed to reach device gateway via MQTT")
     else:
         db.commit()
 
@@ -350,44 +351,28 @@ def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current
     if not zone:
         raise HTTPException(status_code=404, detail="Irrigation zone not found or unauthorized")
     
-    zone.is_active = False
-    if zone.pump:
-        zone.pump.is_running = False
-        zone.pump.last_stopped_at = datetime.now(timezone.utc)
-
-    # Find active event
+    # Find active event (running or dispatched)
     event = db.query(IrrigationEvent).filter(
         IrrigationEvent.irrigation_zone_id == zone.id,
-        IrrigationEvent.status == "running"
-    ).order_by(IrrigationEvent.started_at.desc()).first()
+        IrrigationEvent.status.in_(("running", "dispatched"))
+    ).order_by(IrrigationEvent.created_at.desc()).first()
 
     now = datetime.now(timezone.utc)
     if event:
-        event.status = "completed"
-        event.ended_at = now
+        event.status = "stopping"
         event.abort_reason = req.reason
-        if event.started_at:
-            s_at = event.started_at
-            if s_at.tzinfo is None:
-                s_at = s_at.replace(tzinfo=timezone.utc)
-            duration_secs = int((now - s_at).total_seconds())
-            event.actual_duration_seconds = max(0, duration_secs)
-            # Flow calculation (flow_rate_lpm / 60 * duration_secs)
-            flow_lpm = float(zone.flow_rate_lpm or 45.0)
-            event.water_applied_litres = round((flow_lpm / 60.0) * duration_secs, 1)
         db.commit()
         db.refresh(event)
     else:
-        # Create completed record
+        # Create stopping record
         event = IrrigationEvent(
             organisation_id=zone.organisation_id,
             farm_id=zone.farm_id,
             irrigation_zone_id=zone.id,
             triggered_by="manual_stop",
-            status="completed",
+            status="stopping",
             scheduled_duration_minutes=0,
-            actual_duration_seconds=0,
-            ended_at=now
+            actual_duration_seconds=0
         )
         db.add(event)
         db.commit()
@@ -405,6 +390,7 @@ def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current
             priority=1,
             max_execution_duration_sec=30,
             dispatched_at=now,
+            expires_at=now + timedelta(seconds=90),
             initiated_by=user.id
         )
         db.add(cmd)
@@ -572,19 +558,14 @@ def start_closed_loop_cycle(
         ev.ended_at = datetime.now(timezone.utc)
 
     now = datetime.now(timezone.utc)
-    zone.is_active = True
-    if zone.pump:
-        zone.pump.is_running = True
-        zone.pump.last_started_at = now
-
     event = IrrigationEvent(
         organisation_id=zone.organisation_id,
         farm_id=zone.farm_id,
         irrigation_zone_id=zone.id,
         triggered_by="closed_loop_controller",
-        status="running",
+        status="dispatched",
         scheduled_duration_minutes=int(requested_runtime / 60),
-        started_at=now,
+        started_at=None,
         water_applied_litres=0.0
     )
     db.add(event)
@@ -615,12 +596,18 @@ def start_closed_loop_cycle(
             },
             max_execution_duration_sec=requested_runtime,
             dispatched_at=now,
+            expires_at=now + timedelta(seconds=requested_runtime + 60),
             initiated_by=user.id
         )
         db.add(cmd)
         db.commit()
         from app.services.mqtt_publisher import publish_device_command
-        publish_device_command(dev, cmd)
+        dispatched = publish_device_command(dev, cmd)
+        if not dispatched:
+            event.status = "failed"
+            event.abort_reason = "MQTT_DISPATCH_UNREACHABLE"
+            db.commit()
+            raise HTTPException(status_code=502, detail="Failed to reach device gateway via MQTT")
     else:
         db.commit()
 

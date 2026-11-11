@@ -55,7 +55,7 @@ def test_tc_safe_002_irrigation_zones_and_actuation_lifecycle():
     assert zone_resp.status_code == 200
     zone_id = zone_resp.json()["id"]
 
-    # Safe actuation start (10 minutes <= 30 minutes watchdog limit)
+    # Safe actuation start (returns dispatched awaiting hardware execution)
     start_resp = client.post("/api/v1/irrigation/control/start", json={
         "zone_id": zone_id,
         "duration_minutes": 10,
@@ -63,15 +63,53 @@ def test_tc_safe_002_irrigation_zones_and_actuation_lifecycle():
     })
     assert start_resp.status_code == 200
     start_data = start_resp.json()
-    assert start_data["status"] == "running"
+    assert start_data["status"] == "dispatched"
 
-    # Safe actuation stop
+    # Hardware ACK executes actuation: transitions event to running and activates zone
+    from app.core.database import SessionLocal
+    from app.models.entities import DeviceCommand, IrrigationZone, IrrigationEvent
+    db = SessionLocal()
+    try:
+        cmd = db.query(DeviceCommand).filter(
+            DeviceCommand.command_type == "start_irrigation",
+            DeviceCommand.status == "dispatched"
+        ).order_by(DeviceCommand.created_at.desc()).first()
+        assert cmd is not None
+        ack_res = client.post(f"/api/v1/devices/commands/{cmd.id}/ack", json={"status": "executing"})
+        assert ack_res.status_code == 200
+
+        z = db.query(IrrigationZone).filter(IrrigationZone.id == zone_id).first()
+        assert z.is_active is True
+        ev = db.query(IrrigationEvent).filter(IrrigationEvent.id == start_data["id"]).first()
+        assert ev.status == "running"
+    finally:
+        db.close()
+
+    # Safe actuation stop (returns stopping awaiting hardware shutdown)
     stop_resp = client.post("/api/v1/irrigation/control/stop", json={
         "zone_id": zone_id,
         "reason": "Target moisture threshold reached"
     })
     assert stop_resp.status_code == 200
-    assert stop_resp.json()["status"] == "completed"
+    assert stop_resp.json()["status"] == "stopping"
+
+    # Hardware ACK completes stop: closes event and deactivates zone
+    db = SessionLocal()
+    try:
+        stop_cmd = db.query(DeviceCommand).filter(
+            DeviceCommand.command_type == "stop_irrigation",
+            DeviceCommand.status == "dispatched"
+        ).order_by(DeviceCommand.created_at.desc()).first()
+        assert stop_cmd is not None
+        ack_res2 = client.post(f"/api/v1/devices/commands/{stop_cmd.id}/ack", json={"status": "completed"})
+        assert ack_res2.status_code == 200
+
+        z = db.query(IrrigationZone).filter(IrrigationZone.id == zone_id).first()
+        assert z.is_active is False
+        ev = db.query(IrrigationEvent).filter(IrrigationEvent.id == start_data["id"]).first()
+        assert ev.status == "completed"
+    finally:
+        db.close()
 
 def test_tc_safe_003_watchdog_duration_cap_enforcement():
     """Verify that requests exceeding 30 minutes (1800s) are rejected by safety preflights."""

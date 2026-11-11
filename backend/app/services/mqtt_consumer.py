@@ -174,7 +174,7 @@ def process_command_ack_message(topic: str, payload_str: str) -> bool:
                     # Transition event to completed/aborted upon confirmed hardware stop
                     event = db.query(IrrigationEvent).filter(
                         IrrigationEvent.irrigation_zone_id == zone_id,
-                        IrrigationEvent.status.in_(("running", "dispatched", "requested"))
+                        IrrigationEvent.status.in_(("running", "stopping", "dispatched", "requested"))
                     ).order_by(IrrigationEvent.created_at.desc()).first()
                     if event:
                         event.status = "completed" if raw_status == "completed" else "failed"

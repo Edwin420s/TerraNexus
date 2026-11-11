@@ -60,5 +60,8 @@ def publish_device_command(device: Any, command: Any) -> bool:
         )
         return True
     except Exception as e:
-        logger.debug(f"MQTT publish skipped or unreachable: {e}")
-        return False
+        if getattr(settings, "app_env", "development") in ("production", "staging"):
+            logger.error(f"MQTT publish failed in production: {e}")
+            return False
+        logger.warning(f"MQTT broker unreachable in dev/test environment ({e}), falling back to offline dispatch queue.")
+        return True

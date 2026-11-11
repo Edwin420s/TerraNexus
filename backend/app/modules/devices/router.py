@@ -371,12 +371,57 @@ def acknowledge_command(command_id: str, req: CommandAckRequest, db: Session = D
         raise HTTPException(status_code=404, detail="Command not found")
     
     cmd.status = req.status
-    if req.status == "acknowledged":
-        cmd.acknowledged_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if req.status in ("acknowledged", "executing", "closed_loop_executing"):
+        cmd.acknowledged_at = now
     elif req.status in ("completed", "failed"):
-        cmd.completed_at = datetime.now(timezone.utc)
+        cmd.completed_at = now
     if req.error_message:
         cmd.error_message = req.error_message
+
+    # Transition zone & event state upon confirmed physical actuation
+    if cmd.payload and "zone_id" in cmd.payload:
+        from app.models.entities import IrrigationZone, IrrigationEvent
+        zone_id = cmd.payload["zone_id"]
+        zone = db.query(IrrigationZone).filter(IrrigationZone.id == zone_id).first()
+
+        if req.status in ("executing", "closed_loop_executing", "running"):
+            event = db.query(IrrigationEvent).filter(
+                IrrigationEvent.irrigation_zone_id == zone_id,
+                IrrigationEvent.status.in_(("dispatched", "requested"))
+            ).order_by(IrrigationEvent.created_at.desc()).first()
+            if event:
+                event.status = "running"
+                event.started_at = now
+            if zone:
+                zone.is_active = True
+                if zone.pump:
+                    zone.pump.is_running = True
+                    zone.pump.last_started_at = now
+
+        elif req.status in ("completed", "failed"):
+            event = db.query(IrrigationEvent).filter(
+                IrrigationEvent.irrigation_zone_id == zone_id,
+                IrrigationEvent.status.in_(("running", "stopping", "dispatched", "requested"))
+            ).order_by(IrrigationEvent.created_at.desc()).first()
+            if event:
+                event.status = "completed" if req.status == "completed" else "failed"
+                event.ended_at = now
+                if event.started_at:
+                    s_at = event.started_at
+                    if s_at.tzinfo is None:
+                        s_at = s_at.replace(tzinfo=timezone.utc)
+                    duration_secs = int((now - s_at).total_seconds())
+                    event.actual_duration_seconds = max(0, duration_secs)
+                    flow_lpm = float(zone.flow_rate_lpm or 45.0) if zone else 45.0
+                    event.water_applied_litres = round((flow_lpm / 60.0) * duration_secs, 1)
+                if req.error_message:
+                    event.abort_reason = req.error_message
+            if zone:
+                zone.is_active = False
+                if zone.pump:
+                    zone.pump.is_running = False
+                    zone.pump.last_stopped_at = now
     
     db.commit()
     return {"status": "ok", "command_id": cmd.id, "new_status": cmd.status}
