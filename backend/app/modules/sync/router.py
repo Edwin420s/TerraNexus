@@ -73,11 +73,11 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
     for op in req.operations:
         client_ts = datetime.fromisoformat(op.client_timestamp) if op.client_timestamp else datetime.now(timezone.utc)
         
-        # 1. Idempotency Check: Verify if operation_id or entity_id already applied
+        # 1. Idempotency Check: Verify if this specific operation_id was already processed
         existing_op = db.query(SyncOperation).filter(
             SyncOperation.client_device_id == client_dev.id,
             (SyncOperation.id == op.operation_id) |
-            ((SyncOperation.entity_id == op.entity_id) & (SyncOperation.operation_type == "create"))
+            ((SyncOperation.entity_id == op.entity_id) & (SyncOperation.operation_type == op.operation_type) & (op.operation_type == "create"))
         ).first()
 
         if existing_op:

@@ -80,10 +80,38 @@
   - Field scouting screen, task checklist screen, and emergency pump cutoff screen (`App.tsx`).
 
 ### 6. Verification & Automated Tests (`backend/tests/`)
-- 11 comprehensive unit and integration test suites covering:
-  - `test_auth_and_farms.py`: Health endpoints, JWT login, profile `/auth/me`, farm and field creation.
-  - `test_devices_and_telemetry.py`: Device provisioning, telemetry envelope persistence into `measurements`, remote command dispatch, and device acknowledgement.
+- 21 comprehensive automated test suites (85+ test cases) passing with 100% success rate:
+  - `test_auth_and_farms.py`: Core health endpoints, JWT authentication, farm and field provisioning.
+  - `test_devices_and_telemetry.py`: Device provisioning, canonical telemetry persistence into `measurements`, remote command dispatch, and device acknowledgements.
   - `test_irrigation_and_operations.py`: Irrigation zones, safe manual actuation preflight check, run completion, task status update.
   - `test_intelligence_and_sync.py`: Recommendations acceptance, QVAC local reasoning engine, offline push and pull synchronization.
   - `test_safety.py`: Irrigation physical safety preflight interlocks, emergency stop blocking, expired command rejection.
-- All 11 tests pass with 100% success rate.
+  - `test_qa_agriculture_and_crops.py`: FAO-56 crop catalogue, multi-stage growth coefficients ($K_c$), seasonal field allocations.
+  - `test_qa_auth_rbac_security.py`: Multi-tenant isolation, cross-tenant leak prevention, JWT claims, role-based access control.
+  - `test_qa_developer_integrations.py`: API key lifecycle, scoped authorization, webhook delivery signing.
+  - `test_qa_devices_and_telemetry.py`: Device provisioning, telemetry deduplication, physical sensor range validation, no fabricated data.
+  - `test_qa_farms_and_spatial.py`: Spatial boundary geometry validation, GIS coordinate integrity, multi-field zoning.
+  - `test_qa_firmware_harness.py`: Firmware logic simulation, ADC calibration curves, hardware watchdog cutoff, physical E-stop latching, command replay protection.
+  - `test_qa_intelligence_and_fao56.py`: Multi-depth layer-by-layer root zone depletion, dynamic weather forecast fallback.
+  - `test_qa_irrigation_safety_critical.py`: Real device presence enforcement, live heartbeat freshness, latched E-stop blocking, MQTT command dispatch.
+  - `test_qa_milestone2_closed_loop_and_fao56.py`: Closed-loop volume delivery, 15-second dry-run emergency cutoff, pulse-flow telemetry ingestion.
+  - `test_qa_monitoring_alerts.py`: Agronomic anomaly detection, sensor threshold triggers, notification delivery routing.
+  - `test_qa_offline_sync_engine.py`: Mobile outbox synchronization, operation-level idempotency deduplication, client device ownership validation.
+  - `test_qa_operations_and_traceability.py`: Batch harvesting records, double-entry inventory transactions, machinery maintenance scheduling.
+  - `test_qa_performance_stress.py`: High-concurrency telemetry ingestion bursts, database connection pool resilience.
+  - `test_qa_reporting_and_audit.py`: Immutable audit logs, tenant water productivity metrics, CSV/JSON report exports.
+  - `test_qa_security_injection.py`: SQL injection resistance, JSON payload tampering protection, shell escape prevention.
+  - `test_reporting_and_admin.py`: Super-admin diagnostics, system audit feed, infrastructure telemetry.
+
+### 7. Hardened Safety & Architecture Implementation Matrix
+| Dimension | Baseline Prototype State | Hardened Production-Ready State |
+|---|---|---|
+| **Authentication & RBAC** | Static demo bypass | Genuine cryptographically signed JWTs, strictly enforced tenant isolation across all endpoints |
+| **Irrigation Actuation** | Open timer, mock device success | Mandatory provisioned hardware device, live heartbeat check (<120s), MQTT command dispatch, real device acknowledgment lifecycle |
+| **Emergency Cutoff** | Soft software reset | Latched physical GPIO pin verification (`PIN_EMERGENCY_STOP_BTN == HIGH`), rejects remote reset if physically held |
+| **Command Integrity** | Unchecked MQTT execution | Monotonic sequence counters, replay attack rejection, deadline expiration enforcement |
+| **MQTT Security** | Anonymous open broker | Authenticated broker profile, per-tenant ACL patterns (`mosquitto_acl.conf`) |
+| **Telemetry Ingestion** | Simulated demo points when empty | Genuine persisted measurements only, event-level idempotency deduplication, physical range validation (0-100% moisture, 0-14 pH) |
+| **Mobile Synchronization** | In-memory outbox array | SQLite-backed persistent queue (`sync_queue` table), surviving app crash/restart |
+| **Agronomic Physics** | Single-depth moisture lookup | Multi-depth layer-by-layer root horizon integration (FAO-56 Chapter 8), dynamic soil texture boundaries (TAW/RAW) |
+

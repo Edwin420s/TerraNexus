@@ -1,3 +1,4 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
@@ -30,5 +31,12 @@ class Settings(BaseSettings):
     
     # QVAC Local AI endpoint
     qvac_endpoint: str = "http://localhost:8080/v1/qvac"
+
+    @model_validator(mode="after")
+    def validate_production_security(self):
+        if self.app_env in ("production", "staging"):
+            if self.jwt_secret == "terranexus-insecure-secret-key-change-in-production-2026" or len(self.jwt_secret) < 32:
+                raise ValueError("In production or staging, JWT_SECRET must be explicitly set via environment variable and be at least 32 characters long.")
+        return self
 
 settings = Settings()

@@ -66,9 +66,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - **Liveness Health Endpoint**: `http://localhost:8000/health/live`
 - **Readiness Health Endpoint**: `http://localhost:8000/health/ready`
 
-Default credentials for demonstration:
-- **Email**: `admin@terranexus.org`
-- **Password**: `TerraNexus2026!`
+Development & Demo Account Initialization:
+- To initialize a development administrator account, run `python3 scripts/seed_demo.py`.
+- In production, configure `ADMIN_EMAIL` and `ADMIN_INITIAL_PASSWORD` via secure environment variables. Never commit production credentials.
 
 ---
 
