@@ -199,3 +199,31 @@ def test_tc_auth_008_telemetry_unprovisioned_device_rejected():
     resp = client.post("/api/v1/telemetry", json=fake_dev_packet)
     assert resp.status_code in (401, 403)
 
+def test_tc_auth_010_cross_tenant_member_listing_blocked():
+    """Verify that a user cannot query members of an organisation they do not belong to."""
+    # Register Org 1
+    u1_resp = client.post("/api/v1/auth/register", json={
+        "email": f"isolated_u1_{uuid.uuid4().hex[:6]}@org1.com",
+        "password": "Password123!",
+        "first_name": "Org1",
+        "last_name": "User",
+        "organisation_name": "Isolated Org 1"
+    })
+    token1 = u1_resp.json()["access_token"]
+    org1_id = u1_resp.json()["organisation_id"]
+
+    # Register Org 2
+    u2_resp = client.post("/api/v1/auth/register", json={
+        "email": f"isolated_u2_{uuid.uuid4().hex[:6]}@org2.com",
+        "password": "Password123!",
+        "first_name": "Org2",
+        "last_name": "User",
+        "organisation_name": "Isolated Org 2"
+    })
+    token2 = u2_resp.json()["access_token"]
+
+    # User 2 tries to list members of Org 1 -> MUST BE REJECTED WITH 403
+    resp_cross = client.get(f"/api/v1/organisations/{org1_id}/members", headers={"Authorization": f"Bearer {token2}"})
+    assert resp_cross.status_code == 403
+
+

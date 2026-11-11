@@ -149,10 +149,10 @@ def verify_email(req: dict):
 
 @router.get("/organisations", response_model=List[OrganisationResponse])
 def list_organisations(user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    orgs = db.query(Organisation).join(Membership).filter(Membership.user_id == user.id).all()
-    if not orgs:
-        # Fallback to first active organisation
-        orgs = db.query(Organisation).limit(5).all()
+    orgs = db.query(Organisation).join(Membership).filter(
+        Membership.user_id == user.id,
+        Membership.status == "active"
+    ).all()
     return [
         OrganisationResponse(
             id=o.id,
@@ -164,7 +164,22 @@ def list_organisations(user: User = Depends(get_current_active_user), db: Sessio
 
 @router.get("/organisations/{org_id}/members", response_model=List[MemberResponse])
 def list_members(org_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    members = db.query(Membership).filter(Membership.organisation_id == org_id).all()
+    # Verify requesting user is an active member of this organisation
+    caller_mem = db.query(Membership).filter(
+        Membership.organisation_id == org_id,
+        Membership.user_id == user.id,
+        Membership.status == "active"
+    ).first()
+    if not caller_mem:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You are not an active member of this organisation"
+        )
+
+    members = db.query(Membership).filter(
+        Membership.organisation_id == org_id,
+        Membership.status == "active"
+    ).all()
     result = []
     for m in members:
         u = db.query(User).filter(User.id == m.user_id).first()

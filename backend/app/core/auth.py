@@ -63,17 +63,22 @@ def get_current_active_user(current_user: User = Depends(get_current_user)) -> U
         )
     return current_user
 
-def require_role(allowed_roles: List[str]):
+def require_role(allowed_roles: List[str], organisation_id: Optional[str] = None):
     def role_checker(
         current_user: User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
     ) -> User:
-        # Check if user has membership with allowed role in their organisation
-        membership = db.query(Membership).filter(Membership.user_id == current_user.id).first()
-        if not membership or membership.role not in allowed_roles:
-            # Owner is always allowed
-            if membership and membership.role == "owner":
-                return current_user
+        # Check active memberships for permitted roles across relevant organisation(s)
+        query = db.query(Membership).filter(
+            Membership.user_id == current_user.id,
+            Membership.status == "active"
+        )
+        if organisation_id:
+            query = query.filter(Membership.organisation_id == organisation_id)
+        memberships = query.all()
+
+        has_permission = any(m.role == "owner" or m.role in allowed_roles for m in memberships)
+        if not has_permission:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Requires one of roles: {allowed_roles}"
