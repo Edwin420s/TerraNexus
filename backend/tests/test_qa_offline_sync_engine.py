@@ -108,6 +108,12 @@ def test_tc_sync_003_idempotency_and_tenant_device_isolation():
     data1 = resp1.json()
     assert data1["applied_count"] == 1  # Only the valid observation applied
     assert data1["deduplicated_count"] == 0
+    assert "results" in data1
+    assert len(data1["results"]) == 2
+    res_statuses = {r["operation_id"]: r["status"] for r in data1["results"]}
+    assert res_statuses[op_id] == "applied"
+    unhandled_id = payload["operations"][1]["operation_id"]
+    assert res_statuses[unhandled_id] == "rejected"
 
     # 2. Second push with exact same operations: must be deduplicated
     resp2 = client.post("/api/v1/sync/push", json=payload)
@@ -115,4 +121,5 @@ def test_tc_sync_003_idempotency_and_tenant_device_isolation():
     data2 = resp2.json()
     assert data2["deduplicated_count"] >= 1
     assert data2["applied_count"] == 0
+    assert any(r["status"] == "deduplicated" for r in data2["results"])
 

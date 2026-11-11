@@ -26,6 +26,11 @@ class SyncPushRequest(BaseModel):
     device_model: Optional[str] = "Mobile-Client"
     operations: List[SyncPushOperation]
 
+class SyncOperationResult(BaseModel):
+    operation_id: str
+    status: str # applied, conflict, rejected, deduplicated
+    error: Optional[str] = None
+
 class SyncPushResponse(BaseModel):
     client_uuid: str
     processed_count: int
@@ -34,6 +39,7 @@ class SyncPushResponse(BaseModel):
     deduplicated_count: int = 0
     new_sync_cursor: int
     idempotent_event_log_active: bool = True
+    results: List[SyncOperationResult] = []
 
 class SyncPullRequest(BaseModel):
     client_uuid: str
@@ -69,6 +75,7 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
     applied = 0
     conflicts = 0
     deduplicated = 0
+    results: List[SyncOperationResult] = []
 
     for op in req.operations:
         client_ts = datetime.fromisoformat(op.client_timestamp) if op.client_timestamp else datetime.now(timezone.utc)
@@ -83,6 +90,7 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
         if existing_op:
             # Idempotent deduplication: already ingested, do not duplicate
             deduplicated += 1
+            results.append(SyncOperationResult(operation_id=op.operation_id, status="deduplicated"))
             continue
 
         # 2. Domain-Specific Conflict Detection
@@ -136,8 +144,14 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                 if obs_to_update and "description" in op.payload:
                     obs_to_update.description = op.payload["description"]
                 applied += 1
+            results.append(SyncOperationResult(
+                operation_id=op.operation_id,
+                status="conflict",
+                error=f"Conflict detected for {op.entity_name} ({resolution_strategy})"
+            ))
         else:
             # Apply mutation to target entity
+            op_applied = False
             if op.entity_name == "field_observation" and op.operation_type == "create":
                 target_field_id = op.payload.get("field_id")
                 if not target_field_id:
@@ -155,12 +169,14 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                 )
                 db.add(obs)
                 applied += 1
+                op_applied = True
             elif op.entity_name == "task" and op.operation_type == "update":
                 existing = db.query(Task).filter(Task.id == op.entity_id, Task.organisation_id.in_(user_org_ids)).first()
                 if existing:
                     if "status" in op.payload:
                         existing.status = op.payload["status"]
                 applied += 1
+                op_applied = True
             elif op.entity_name == "task" and op.operation_type == "create":
                 task = Task(
                     id=op.entity_id,
@@ -171,12 +187,22 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                 )
                 db.add(task)
                 applied += 1
+                op_applied = True
             elif op.entity_name in ("field_observation", "task") and op.operation_type in ("delete", "archive"):
                 applied += 1
+                op_applied = True
             else:
                 # Unsupported/unhandled mutation: do not falsely report applied
                 sync_op.status = "rejected"
                 sync_op.conflict_reason = f"Unsupported entity or operation: {op.entity_name}:{op.operation_type}"
+                results.append(SyncOperationResult(
+                    operation_id=op.operation_id,
+                    status="rejected",
+                    error=sync_op.conflict_reason
+                ))
+
+            if op_applied:
+                results.append(SyncOperationResult(operation_id=op.operation_id, status="applied"))
 
     client_dev.sync_cursor += len(req.operations)
     client_dev.last_sync_at = datetime.now(timezone.utc)
@@ -189,7 +215,8 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
         conflict_count=conflicts,
         deduplicated_count=deduplicated,
         new_sync_cursor=client_dev.sync_cursor,
-        idempotent_event_log_active=True
+        idempotent_event_log_active=True,
+        results=results
     )
 
 @router.post("/pull", response_model=SyncPullResponse)

@@ -113,7 +113,10 @@ export class MobileSyncEngine {
           ]
         );
       } catch (err) {
-        console.warn('Failed to persist sync operation to SQLite:', err);
+        // Rollback in-memory state on persistence failure and throw
+        this.outboxQueue = this.outboxQueue.filter((o) => o.operation_id !== item.operation_id);
+        console.error('Failed to persist sync operation to durable SQLite storage:', err);
+        throw err;
       }
     }
   }
@@ -156,17 +159,28 @@ export class MobileSyncEngine {
 
       const result = await response.json();
       
-      // On successful push, remove acknowledged operations from durable SQLite storage & memory
-      const pushedIds = operations.map((o) => o.operation_id);
-      const pushedSet = new Set(pushedIds);
-      this.outboxQueue = this.outboxQueue.filter((o) => !pushedSet.has(o.operation_id));
+      // Inspect detailed per-operation results: only prune applied and deduplicated operations.
+      // Conflicted and rejected mutations are preserved in durable SQLite outbox for manual/user resolution.
+      const settledIds = new Set<string>();
+      if (Array.isArray(result.results)) {
+        for (const res of result.results) {
+          if (res.status === 'applied' || res.status === 'deduplicated') {
+            settledIds.add(res.operation_id);
+          }
+        }
+      } else {
+        // Fallback for backwards compatibility if results array is absent
+        operations.forEach((o) => settledIds.add(o.operation_id));
+      }
+
+      this.outboxQueue = this.outboxQueue.filter((o) => !settledIds.has(o.operation_id));
 
       if (this.db && this.db.runAsync) {
-        for (const id of pushedIds) {
+        for (const id of settledIds) {
           try {
             await this.db.runAsync('DELETE FROM sync_queue WHERE id = ?', [id]);
           } catch (e) {
-            console.warn(`Failed to delete acknowledged operation ${id} from SQLite:`, e);
+            console.warn(`Failed to delete settled operation ${id} from SQLite:`, e);
           }
         }
       }
