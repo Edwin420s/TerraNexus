@@ -129,3 +129,58 @@ def test_tc_dev_003_device_command_dispatch_and_ack():
     })
     assert ack_resp.status_code == 200
     assert ack_resp.json()["new_status"] == "acknowledged"
+
+def test_tc_dev_004_telemetry_deduplication_range_validation_and_no_fabricated_data():
+    """Verify event_id deduplication, physical sensor range validation, and strict absence of fake demo data."""
+    farms = client.get("/api/v1/farms").json()
+    farm_id = farms[0]["id"]
+
+    # Register new clean device
+    uid = f"esp32-range-{uuid.uuid4().hex[:6]}"
+    dev_resp = client.post("/api/v1/devices", json={
+        "farm_id": farm_id,
+        "device_uid": uid,
+        "name": "Validation Probe",
+        "device_type": "esp32_sensor_node",
+        "hardware_version": "v1.0",
+        "firmware_version": "1.0.0"
+    })
+    device_id = dev_resp.json()["id"]
+
+    # 1. Verify empty measurements returns [] instead of fabricated demo points
+    empty_resp = client.get(f"/api/v1/measurements?device_id={device_id}")
+    assert empty_resp.status_code == 200
+    assert empty_resp.json() == []
+
+    # 2. Ingest telemetry with out-of-range moisture value (250%)
+    event_id = str(uuid.uuid4())
+    t_payload = {
+        "event_id": event_id,
+        "schema_version": "1.0",
+        "device_id": device_id,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "sequence": 1,
+        "measurements": [
+            {"type": "soil_moisture", "value": 250.0, "unit": "%"} # Invalid physical value
+        ]
+    }
+    first_resp = client.post("/api/v1/telemetry", json=t_payload)
+    assert first_resp.status_code == 202
+    assert first_resp.json()["status"] == "persisted_and_processed"
+
+    # Verify invalid value was flagged with quality_score = 0.0
+    m_resp = client.get(f"/api/v1/measurements?device_id={device_id}")
+    assert m_resp.status_code == 200
+    m_list = m_resp.json()
+    assert len(m_list) == 1
+    assert m_list[0]["quality_score"] == 0.0
+
+    # 3. Duplicate event_id ingestion must be deduplicated
+    dup_resp = client.post("/api/v1/telemetry", json=t_payload)
+    assert dup_resp.status_code == 202
+    assert dup_resp.json()["status"] == "already_ingested_duplicate"
+
+    # Measurement count must still be 1 (no duplicate insertion)
+    m_resp2 = client.get(f"/api/v1/measurements?device_id={device_id}")
+    assert len(m_resp2.json()) == 1
+
