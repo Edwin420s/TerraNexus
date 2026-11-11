@@ -27,12 +27,28 @@ unsigned long lastTelemetryMillis = 0;
 unsigned long lastHeartbeatMillis = 0;
 unsigned long sequenceCounter = 0;
 
+// Closed-Loop Flow & Dry-Run Safety State
+volatile unsigned long flowPulseCount = 0;
+bool closedLoopActive = false;
+float targetVolumeLitres = 0.0f;
+float deliveredVolumeLitres = 0.0f;
+unsigned long lastFlowCheckMillis = 0;
+unsigned long flowPulsesAtLastCheck = 0;
+float currentFlowRateLPM = 0.0f;
+bool dryRunFaultActive = false;
+
+// Interrupt Service Routine for Water Flow Pulse Counter
+void IRAM_ATTR handleFlowPulse() {
+    flowPulseCount++;
+}
+
 // Interrupt Service Routine for Emergency Stop Button
 void IRAM_ATTR handleEmergencyStop() {
     emergencyStopActive = true;
     digitalWrite(PIN_RELAY_PUMP, HIGH);  // Active-LOW relay OFF
     digitalWrite(PIN_RELAY_VALVE, HIGH); // Solenoid valve CLOSED
     pumpIsActive = false;
+    closedLoopActive = false;
 }
 
 void setupDeviceUID() {
@@ -100,7 +116,38 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
         return;
     }
 
-    if (strcmp(action, "turn_on") == 0) {
+    if (strcmp(action, "start_closed_loop") == 0) {
+        if (emergencyStopActive) {
+            publishCommandAck(commandId, "failed", "EMERGENCY_STOP_ACTIVE");
+            return;
+        }
+        if (millis() - lastPumpStopTime < (MIN_COOLOFF_SEC * 1000) && lastPumpStopTime != 0) {
+            publishCommandAck(commandId, "failed", "PUMP_COOLOFF_ACTIVE");
+            return;
+        }
+
+        float targetLitres = doc["payload"]["target_volume_litres"] | 1000.0f;
+        int maxDurationSec = doc["payload"]["max_duration_sec"] | MAX_CONTINUOUS_RUN_SEC;
+        if (maxDurationSec > MAX_CONTINUOUS_RUN_SEC) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
+
+        targetVolumeLitres = targetLitres;
+        deliveredVolumeLitres = 0.0f;
+        flowPulseCount = 0;
+        flowPulsesAtLastCheck = 0;
+        lastFlowCheckMillis = millis();
+        dryRunFaultActive = false;
+        closedLoopActive = true;
+
+        // Engage valve first, then pump
+        digitalWrite(PIN_RELAY_VALVE, LOW);
+        delay(200);
+        digitalWrite(PIN_RELAY_PUMP, LOW);
+        pumpIsActive = true;
+        pumpStartTime = millis();
+
+        publishCommandAck(commandId, "closed_loop_executing");
+    }
+    else if (strcmp(action, "turn_on") == 0) {
         // Check cool-off period
         if (millis() - lastPumpStopTime < (MIN_COOLOFF_SEC * 1000) && lastPumpStopTime != 0) {
             publishCommandAck(commandId, "failed", "PUMP_COOLOFF_ACTIVE");
@@ -194,6 +241,17 @@ void sendTelemetry() {
         m4["unit"] = "%";
     }
 
+    // Closed-Loop Flow Measurements
+    JsonObject m5 = measurements.add<JsonObject>();
+    m5["type"] = "water_flow_rate";
+    m5["value"] = currentFlowRateLPM;
+    m5["unit"] = "LPM";
+
+    JsonObject m6 = measurements.add<JsonObject>();
+    m6["type"] = "cumulative_volume";
+    m6["value"] = deliveredVolumeLitres;
+    m6["unit"] = "L";
+
     char buffer[1024];
     serializeJson(doc, buffer);
 
@@ -218,6 +276,7 @@ void setup() {
     pinMode(PIN_RELAY_VALVE, OUTPUT);
     pinMode(PIN_STATUS_LED, OUTPUT);
     pinMode(PIN_EMERGENCY_STOP_BTN, INPUT_PULLUP);
+    pinMode(PIN_FLOW_METER, INPUT_PULLUP);
 
     // Initial Safe State (Relays OFF)
     digitalWrite(PIN_RELAY_PUMP, HIGH);
@@ -226,6 +285,9 @@ void setup() {
 
     // Emergency Stop Button Hardware Interrupt
     attachInterrupt(digitalPinToInterrupt(PIN_EMERGENCY_STOP_BTN), handleEmergencyStop, FALLING);
+
+    // Flow Meter Hall Effect Pulse Interrupt
+    attachInterrupt(digitalPinToInterrupt(PIN_FLOW_METER), handleFlowPulse, RISING);
 
     dht.begin();
     setupDeviceUID();
@@ -237,14 +299,58 @@ void setup() {
 }
 
 void loop() {
+    unsigned long now = millis();
+
+    // 0. Calculate Real-Time Water Flow (every 1 second)
+    if (now - lastFlowCheckMillis >= 1000UL) {
+        unsigned long elapsedMs = now - lastFlowCheckMillis;
+        unsigned long currentPulses = flowPulseCount;
+        unsigned long deltaPulses = currentPulses - flowPulsesAtLastCheck;
+        flowPulsesAtLastCheck = currentPulses;
+        lastFlowCheckMillis = now;
+
+        // Pulses to volume (Litres) and flow rate (Litres / min)
+        float deltaLitres = deltaPulses / FLOW_PULSES_PER_LITRE;
+        deliveredVolumeLitres += deltaLitres;
+        currentFlowRateLPM = (deltaLitres / (elapsedMs / 1000.0f)) * 60.0f;
+
+        // 15-Second Dry-Run Interlock: Check flow when pump active
+        if (pumpIsActive && (now - pumpStartTime >= (DRY_RUN_VERIFICATION_SEC * 1000UL))) {
+            if (currentFlowRateLPM < MIN_EXPECTED_FLOW_LPM && !dryRunFaultActive) {
+                // Emergency Dry-Run Cutoff: Protect pump from cavitation / dry well
+                digitalWrite(PIN_RELAY_PUMP, HIGH);
+                digitalWrite(PIN_RELAY_VALVE, HIGH);
+                pumpIsActive = false;
+                closedLoopActive = false;
+                dryRunFaultActive = true;
+                lastPumpStopTime = now;
+                publishCommandAck("dry_run_cutoff", "failed", "PUMP_DRY_RUN_DETECTED_NO_FLOW");
+            }
+        }
+
+        // Closed-Loop Volume Cutoff: Check if target litres reached
+        if (closedLoopActive && pumpIsActive) {
+            if (deliveredVolumeLitres >= targetVolumeLitres) {
+                digitalWrite(PIN_RELAY_PUMP, HIGH);
+                delay(200);
+                digitalWrite(PIN_RELAY_VALVE, HIGH);
+                pumpIsActive = false;
+                closedLoopActive = false;
+                lastPumpStopTime = now;
+                publishCommandAck("closed_loop_target", "completed", "TARGET_VOLUME_DELIVERED");
+            }
+        }
+    }
+
     // 1. Hardware Safety Watchdog
     if (pumpIsActive) {
-        if ((millis() - pumpStartTime) >= (MAX_CONTINUOUS_RUN_SEC * 1000UL)) {
+        if ((now - pumpStartTime) >= (MAX_CONTINUOUS_RUN_SEC * 1000UL)) {
             // Cutoff triggered by local hardware watchdog timer
             digitalWrite(PIN_RELAY_PUMP, HIGH);
             digitalWrite(PIN_RELAY_VALVE, HIGH);
             pumpIsActive = false;
-            lastPumpStopTime = millis();
+            closedLoopActive = false;
+            lastPumpStopTime = now;
             publishCommandAck("watchdog_trip", "failed", "WATCHDOG_TIMEOUT_CUTOFF");
         }
     }
@@ -259,8 +365,11 @@ void loop() {
     }
 
     // 3. Periodic Telemetry
-    if (millis() - lastTelemetryMillis >= TELEMETRY_INTERVAL_MS) {
-        lastTelemetryMillis = millis();
+    if (now - lastTelemetryMillis >= TELEMETRY_INTERVAL_MS) {
+        lastTelemetryMillis = now;
+        sendTelemetry();
+    }
+}
         sendTelemetry();
     }
 }

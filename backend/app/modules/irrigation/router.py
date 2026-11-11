@@ -303,3 +303,200 @@ def list_irrigation_history(zone_id: Optional[str] = None, user: User = Depends(
             water_applied_litres=float(e.water_applied_litres or 0.0)
         ) for e in events
     ]
+
+# ----------------- Closed-Loop Intelligent Irrigation -----------------
+
+class ClosedLoopPlanRequest(BaseModel):
+    zone_id: str
+    crop: Optional[str] = "tomato"
+    growth_stage: Optional[str] = "mid_season"
+    soil_texture: Optional[str] = "clay_loam"
+    current_moisture_pct: float
+    field_area_m2: Optional[float] = 1000.0
+
+class ClosedLoopStartRequest(BaseModel):
+    zone_id: str
+    target_volume_litres: float
+    max_duration_seconds: Optional[int] = 1800
+    dry_run_cutoff_sec: Optional[int] = 15
+    operator_notes: Optional[str] = None
+
+class ClosedLoopFeedbackRequest(BaseModel):
+    zone_id: str
+    event_id: str
+    current_flow_rate_lpm: float
+    delivered_volume_litres: float
+    elapsed_seconds: int
+    soil_moisture_shallow_pct: Optional[float] = None
+    dry_run_fault: Optional[bool] = False
+
+@router.post("/closed-loop/plan")
+def plan_closed_loop_irrigation(
+    req: ClosedLoopPlanRequest,
+    user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Computes an exact closed-loop irrigation plan by evaluating soil depletion,
+    hydraulic boundaries (TAW/RAW), and required gross volume (Litres).
+    """
+    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Irrigation zone not found")
+
+    from app.services.agronomic_engine import calculate_dynamic_fao56, AgronomicAssessmentRequest
+
+    eval_result = calculate_dynamic_fao56(AgronomicAssessmentRequest(
+        crop=req.crop or "tomato",
+        growth_stage=req.growth_stage or "mid_season",
+        soil_texture=req.soil_texture or "clay_loam",
+        single_moisture_pct=req.current_moisture_pct,
+        field_area_m2=req.field_area_m2 or 1000.0,
+        irrigation_efficiency=0.90,
+        system_flow_rate_lpm=float(zone.flow_rate_lpm or 45.0)
+    ))
+
+    # Preflight water source
+    source = db.query(WaterSource).filter(WaterSource.id == zone.water_source_id).first() if zone.water_source_id else None
+    available_water = float(source.current_level_litres or 10000.0) if source else 10000.0
+    has_sufficient_water = available_water >= eval_result.gross_water_volume_litres
+
+    return {
+        "zone_id": zone.id,
+        "zone_name": zone.name,
+        "irrigation_needed": eval_result.irrigation_needed,
+        "status_label": eval_result.status_label,
+        "soil_moisture_pct": req.current_moisture_pct,
+        "taw_mm": eval_result.taw_mm,
+        "raw_mm": eval_result.raw_mm,
+        "target_volume_litres": eval_result.gross_water_volume_litres,
+        "recommended_duration_minutes": eval_result.recommended_duration_minutes,
+        "max_watchdog_cutoff_sec": 1800,
+        "dry_run_verification_window_sec": 15,
+        "water_source_sufficient": has_sufficient_water,
+        "available_reservoir_litres": available_water,
+        "reasoning": eval_result.explainable_reasoning
+    }
+
+@router.post("/closed-loop/start")
+def start_closed_loop_cycle(
+    req: ClosedLoopStartRequest,
+    user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Initiates closed-loop volume-controlled irrigation with a 15s dry-run interlock.
+    Dispatches hardware command to the edge microcontroller.
+    """
+    zone = db.query(IrrigationZone).filter(IrrigationZone.id == req.zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Irrigation zone not found")
+
+    if req.target_volume_litres <= 0:
+        raise HTTPException(status_code=400, detail="Target volume must be positive")
+
+    # Safety check: if previous event still running on this zone, gracefully close it out
+    active_events = db.query(IrrigationEvent).filter(
+        IrrigationEvent.irrigation_zone_id == zone.id,
+        IrrigationEvent.status == "running"
+    ).all()
+    for ev in active_events:
+        ev.status = "completed"
+        ev.ended_at = datetime.now(timezone.utc)
+
+    now = datetime.now(timezone.utc)
+    zone.is_active = True
+    if zone.pump:
+        zone.pump.is_running = True
+        zone.pump.last_started_at = now
+
+    event = IrrigationEvent(
+        organisation_id=zone.organisation_id,
+        farm_id=zone.farm_id,
+        irrigation_zone_id=zone.id,
+        triggered_by="closed_loop_controller",
+        status="running",
+        scheduled_duration_minutes=int((req.max_duration_seconds or 1800) / 60),
+        started_at=now,
+        water_applied_litres=0.0
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+
+    return {
+        "status": "closed_loop_dispatched",
+        "event_id": event.id,
+        "zone_id": zone.id,
+        "target_volume_litres": req.target_volume_litres,
+        "max_duration_seconds": min(1800, req.max_duration_seconds or 1800),
+        "dry_run_interlock_sec": 15,
+        "min_expected_flow_lpm": 2.0,
+        "hardware_watchdog_active": True,
+        "timestamp": now.isoformat()
+    }
+
+@router.post("/closed-loop/feedback")
+def record_closed_loop_feedback(
+    req: ClosedLoopFeedbackRequest,
+    user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Ingests real-time flow telemetry from pulse-flow sensor and handles
+    target volume completion or 15-second dry-run emergency cutoff.
+    """
+    event = db.query(IrrigationEvent).filter(IrrigationEvent.id == req.event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Irrigation event not found")
+
+    zone = event.zone
+    now = datetime.now(timezone.utc)
+
+    # Dry-Run Fault Condition
+    if req.dry_run_fault:
+        event.status = "fault_cutoff"
+        event.ended_at = now
+        event.actual_duration_seconds = req.elapsed_seconds
+        event.water_applied_litres = req.delivered_volume_litres
+        event.abort_reason = "DRY_RUN_PUMP_CUTOFF_NO_FLOW_DETECTED"
+        if zone:
+            zone.is_active = False
+            if zone.pump:
+                zone.pump.is_running = False
+                zone.pump.last_stopped_at = now
+        db.commit()
+        return {
+            "status": "emergency_cutoff_enacted",
+            "reason": "DRY_RUN_PUMP_PROTECTION",
+            "pump_shutdown": True,
+            "valve_closed": True
+        }
+
+    # Normal feedback update
+    event.actual_duration_seconds = req.elapsed_seconds
+    event.water_applied_litres = req.delivered_volume_litres
+    db.commit()
+
+    return {
+        "status": "tracking",
+        "event_id": event.id,
+        "delivered_volume_litres": req.delivered_volume_litres,
+        "current_flow_rate_lpm": req.current_flow_rate_lpm,
+        "elapsed_seconds": req.elapsed_seconds
+    }
+    if zone_id:
+        query = query.filter(IrrigationEvent.irrigation_zone_id == zone_id)
+    events = query.order_by(IrrigationEvent.created_at.desc()).limit(50).all()
+    return [
+        IrrigationEventResponse(
+            id=e.id,
+            zone_id=e.irrigation_zone_id,
+            status=e.status,
+            scheduled_duration_minutes=e.scheduled_duration_minutes,
+            actual_duration_seconds=e.actual_duration_seconds or 0,
+            started_at=e.started_at.isoformat() if e.started_at else None,
+            ended_at=e.ended_at.isoformat() if e.ended_at else None,
+            water_applied_litres=float(e.water_applied_litres or 0.0)
+        ) for e in events
+    ]

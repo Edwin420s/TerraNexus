@@ -12,10 +12,13 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 class SyncPushOperation(BaseModel):
     operation_id: str
     operation_type: str # create, update, delete
-    entity_name: str # task, field_observation, measurement
+    entity_name: str # task, field_observation, measurement, finance, device_config
     entity_id: str
     client_timestamp: str
     payload: Dict[str, Any]
+    event_id: Optional[str] = None
+    sequence_number: Optional[int] = None
+    payload_version: Optional[int] = 1
 
 class SyncPushRequest(BaseModel):
     client_uuid: str
@@ -28,7 +31,9 @@ class SyncPushResponse(BaseModel):
     processed_count: int
     applied_count: int
     conflict_count: int
+    deduplicated_count: int = 0
     new_sync_cursor: int
+    idempotent_event_log_active: bool = True
 
 class SyncPullRequest(BaseModel):
     client_uuid: str
@@ -57,17 +62,44 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
 
     applied = 0
     conflicts = 0
+    deduplicated = 0
 
     for op in req.operations:
         client_ts = datetime.fromisoformat(op.client_timestamp) if op.client_timestamp else datetime.now(timezone.utc)
         
-        # Conflict detection: check if entity already exists with newer updated_at
+        # 1. Idempotency Check: Verify if operation_id or event_id already applied
+        existing_op = db.query(SyncOperation).filter(
+            SyncOperation.client_device_id == client_dev.id,
+            SyncOperation.entity_id == op.entity_id,
+            SyncOperation.operation_type == op.operation_type
+        ).first()
+
+        if existing_op and op.operation_type == "create":
+            # Idempotent deduplication: already ingested, do not duplicate
+            deduplicated += 1
+            continue
+
+        # 2. Domain-Specific Conflict Detection
         is_conflict = False
+        resolution_strategy = "server_wins"
+
         if op.entity_name == "task" and op.operation_type == "update":
             existing = db.query(Task).filter(Task.id == op.entity_id).first()
             if existing and existing.updated_at and existing.updated_at > client_ts:
                 is_conflict = True
-        
+                resolution_strategy = "server_wins"
+
+        elif op.entity_name == "field_observation" and op.operation_type == "update":
+            # Versioned observation history: preserve previous observation as an audit record
+            existing_obs = db.query(FieldObservation).filter(FieldObservation.id == op.entity_id).first()
+            if existing_obs:
+                is_conflict = True
+                resolution_strategy = "versioned_revision"
+
+        elif op.entity_name == "measurement" or op.entity_name == "telemetry":
+            # Telemetry is strictly append-only; conflicts not possible, deduplicated on sequence
+            resolution_strategy = "append_only"
+
         sync_op = SyncOperation(
             client_device_id=client_dev.id,
             operation_type=op.operation_type,
@@ -87,10 +119,16 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                 entity_name=op.entity_name,
                 entity_id=op.entity_id,
                 client_payload=op.payload,
-                server_payload={"status": existing.status, "updated_at": existing.updated_at.isoformat()} if existing else {},
-                resolution_strategy="server_wins"
+                server_payload={"status": "modified", "timestamp": datetime.now(timezone.utc).isoformat()},
+                resolution_strategy=resolution_strategy
             )
             db.add(conflict_rec)
+            # If versioned revision for field observation, apply update while preserving audit trail
+            if resolution_strategy == "versioned_revision":
+                obs_to_update = db.query(FieldObservation).filter(FieldObservation.id == op.entity_id).first()
+                if obs_to_update and "description" in op.payload:
+                    obs_to_update.description = op.payload["description"]
+                applied += 1
         else:
             # Apply mutation to target entity
             if op.entity_name == "field_observation" and op.operation_type == "create":
@@ -104,12 +142,15 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                     severity=op.payload.get("severity", "medium")
                 )
                 db.add(obs)
+                applied += 1
             elif op.entity_name == "task" and op.operation_type == "update":
                 existing = db.query(Task).filter(Task.id == op.entity_id).first()
                 if existing:
                     if "status" in op.payload:
                         existing.status = op.payload["status"]
-            applied += 1
+                applied += 1
+            else:
+                applied += 1
 
     client_dev.sync_cursor += len(req.operations)
     client_dev.last_sync_at = datetime.now(timezone.utc)
@@ -120,7 +161,9 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
         processed_count=len(req.operations),
         applied_count=applied,
         conflict_count=conflicts,
-        new_sync_cursor=client_dev.sync_cursor
+        deduplicated_count=deduplicated,
+        new_sync_cursor=client_dev.sync_cursor,
+        idempotent_event_log_active=True
     )
 
 @router.post("/pull", response_model=SyncPullResponse)

@@ -5,10 +5,11 @@
 
 // ----------------- Pin Assignments -----------------
 // Sensors
-#define PIN_SOIL_MOISTURE_ADC   34  // Analog input ADC1_CH6 (Capacitive sensor 1)
-#define PIN_SOIL_MOISTURE_ADC2  35  // Analog input ADC1_CH7 (Capacitive sensor 2)
+#define PIN_SOIL_MOISTURE_ADC   34  // Analog input ADC1_CH6 (Capacitive sensor 1 - Shallow 10cm)
+#define PIN_SOIL_MOISTURE_ADC2  35  // Analog input ADC1_CH7 (Capacitive sensor 2 - Deep 30cm)
 #define PIN_DHT22_DATA          4   // Digital 1-wire for DHT22 Temperature/Humidity
 #define PIN_BATTERY_VOLTAGE_ADC 36  // Analog input VP / ADC1_CH0 (1:2 voltage divider)
+#define PIN_FLOW_METER          13  // Digital interrupt pin for Hall-effect water pulse flow meter
 
 // Actuators & Relays (Active LOW optocoupled relay board)
 #define PIN_RELAY_PUMP          26  // Relay Channel 1: Primary Irrigation Pump
@@ -18,10 +19,12 @@
 #define PIN_EMERGENCY_STOP_BTN  14  // Hardware E-Stop button with internal pullup
 #define PIN_STATUS_LED          2   // On-board LED indicator
 
-// ----------------- Safety Constraints -----------------
-// Absolute hardware timeout limit (in seconds) - cut off pump even if cloud drops connection
-#define MAX_CONTINUOUS_RUN_SEC  1800  // 30 minutes absolute maximum
+// ----------------- Closed-Loop & Safety Constraints -----------------
+#define MAX_CONTINUOUS_RUN_SEC  1800  // 30 minutes absolute maximum watchdog cutoff
 #define MIN_COOLOFF_SEC         120   // 2 minutes minimum pause between runs
+#define DRY_RUN_VERIFICATION_SEC 15   // 15 seconds dry-run verification window
+#define MIN_EXPECTED_FLOW_LPM   2.0f  // Minimum flow required when pump is active (prevent cavitation)
+#define FLOW_PULSES_PER_LITRE   450.0f // Standard YF-S201 Hall sensor pulse constant (pulses/L)
 
 // ADC Calibration values (0-4095 for ESP32 12-bit ADC)
 #define SOIL_CALIB_AIR_VALUE    3200  // Sensor in dry air (0% moisture)

@@ -67,46 +67,39 @@ def perform_rule_based_agronomic_inference(prompt: str) -> str:
     if not moisture_match:
         moisture_match = re.search(r"(\d+(?:\.\d+)?)\s*%", prompt_lower)
     crop_match = re.search(r"(maize|tomato|corn|wheat|soybean|potato|onion|lettuce)", prompt_lower)
+    soil_match = re.search(r"(sand|loam|clay|silt)", prompt_lower)
     
-    crop = crop_match.group(1).capitalize() if crop_match else "Field Crop"
-    moisture_val = float(moisture_match.group(1)) if moisture_match else 24.5
+    crop = crop_match.group(1).lower() if crop_match else "tomato"
+    moisture_val = float(moisture_match.group(1)) if moisture_match else 16.2
+    soil_texture = soil_match.group(1) if soil_match else "clay_loam"
 
-    # Crop-specific FAO-56 parameters
-    fao_profiles = {
-        "Maize": {"pwp": 14.0, "fc": 30.0, "mad": 0.50, "kc": 1.20, "root_depth_cm": 80},
-        "Tomato": {"pwp": 15.0, "fc": 32.0, "mad": 0.40, "kc": 1.15, "root_depth_cm": 60},
-        "Wheat": {"pwp": 12.0, "fc": 28.0, "mad": 0.55, "kc": 1.10, "root_depth_cm": 70},
-        "Soybean": {"pwp": 13.0, "fc": 29.0, "mad": 0.50, "kc": 1.15, "root_depth_cm": 60},
-    }
-    profile = fao_profiles.get(crop, {"pwp": 14.0, "fc": 30.0, "mad": 0.50, "kc": 1.15, "root_depth_cm": 70})
-
-    # Available Water Capacity (AWC) and Current Depletion
-    awc = profile["fc"] - profile["pwp"]
-    available_current = max(0.0, moisture_val - profile["pwp"])
-    depletion_pct = max(0.0, min(100.0, (1.0 - (available_current / awc)) * 100.0))
-    threshold_depletion = profile["mad"] * 100.0
-
-    if depletion_pct >= threshold_depletion:
-        status_eval = "DEFICIT_TRIGGERED"
-        run_minutes = min(45, max(15, int((depletion_pct - threshold_depletion) * 1.5) + 20))
-        urgency = "HIGH"
-        action_text = f"Recommend initiating controlled drip irrigation cycle for {run_minutes} minutes"
-    else:
-        status_eval = "OPTIMAL_MOISTURE"
-        urgency = "LOW"
-        action_text = "Soil moisture remains within acceptable root zone buffer; withhold irrigation to prevent waterlogging"
-
-    reasoning = (
-        f"[QVAC Agronomic Rule-Based Engine — FAO-56 Soil-Plant Continuum]\n"
-        f"Crop Target: {crop} | Observed Volumetric Moisture: {moisture_val:.1f}%\n"
-        f"Soil Hydraulic Boundary: Permanent Wilting Point (PWP) = {profile['pwp']}%, Field Capacity (FC) = {profile['fc']}%\n"
-        f"Total Available Water (TAW): {awc:.1f}% volumetric | Calculated Depletion: {depletion_pct:.1f}% "
-        f"(Management Allowed Depletion threshold: {threshold_depletion:.0f}%)\n"
-        f"Agronomic Assessment: Root zone depletion status is {status_eval}. {action_text}. "
-        f"Evapotranspiration replacement rate aligned with FAO-56 dual crop coefficient Kc = {profile['kc']} "
-        f"to preserve root oxygenation and transpiration efficiency."
-    )
-    return reasoning
+    try:
+        from app.services.agronomic_engine import calculate_dynamic_fao56, AgronomicAssessmentRequest
+        res = calculate_dynamic_fao56(AgronomicAssessmentRequest(
+            crop=crop,
+            growth_stage="mid_season",
+            soil_texture=soil_texture,
+            single_moisture_pct=moisture_val,
+            field_area_m2=1000.0,
+            irrigation_efficiency=0.90,
+            system_flow_rate_lpm=45.0
+        ))
+        return res.explainable_reasoning
+    except Exception:
+        # Fallback to local baseline formula
+        fc, pwp = 32.0, 15.0
+        awc = fc - pwp
+        available = max(0.0, moisture_val - pwp)
+        depletion_pct = max(0.0, min(100.0, (1.0 - (available / awc)) * 100.0))
+        status_eval = "DEFICIT_TRIGGERED" if depletion_pct >= 40.0 else "OPTIMAL_MOISTURE"
+        return (
+            f"[QVAC Agronomic Rule-Based Engine — FAO-56 Soil-Plant Continuum]\n"
+            f"Crop Target: {crop.capitalize()} | Observed Volumetric Moisture: {moisture_val:.1f}%\n"
+            f"Soil Hydraulic Boundary: Permanent Wilting Point (PWP) = {pwp}%, Field Capacity (FC) = {fc}%\n"
+            f"Total Available Water (TAW): {awc:.1f}% volumetric | Calculated Depletion: {depletion_pct:.1f}% "
+            f"(Management Allowed Depletion threshold: 40%)\n"
+            f"Agronomic Assessment: Root zone depletion status is {status_eval}."
+        )
 
 def perform_local_neural_inference(prompt: str) -> Dict[str, Any]:
     """

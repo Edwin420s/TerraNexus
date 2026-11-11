@@ -9,6 +9,13 @@ from app.core.database import get_db
 from app.core.auth import get_current_active_user
 from app.models.entities import User, Recommendation, RecommendationEvidence, IntelligenceModel, FarmDocument
 from app.services.qvac_service import QVACDocumentSearchEngine, QVACSpeechEngine
+from app.services.agronomic_engine import (
+    calculate_dynamic_fao56,
+    AgronomicAssessmentRequest,
+    AgronomicAssessmentResult,
+    SOIL_TEXTURE_PROFILES,
+    CROP_PHENOLOGY_PROFILES
+)
 
 router = APIRouter(prefix="/intelligence", tags=["intelligence"])
 
@@ -159,6 +166,28 @@ def get_weather(latitude: float = -1.2921, longitude: float = 36.8219):
             "et0_fao_evapotranspiration": [4.3, 4.6, 4.1],
             "precipitation_sum": [0.0, 1.2, 0.0]
         }
+    }
+
+@router.post("/agronomic-assessment", response_model=AgronomicAssessmentResult)
+def assess_agronomic_status(
+    req: AgronomicAssessmentRequest,
+    user: User = Depends(get_current_active_user)
+):
+    """
+    Evaluates dynamic FAO-56 soil-water continuum for specific soil texture,
+    phenological crop stage, multi-depth root zone readings, and atmospheric demand.
+    Returns explainable hydraulic parameters (TAW, RAW, Dr, Ks, gross litres, duration).
+    """
+    return calculate_dynamic_fao56(req)
+
+@router.get("/agronomic-profiles")
+def get_agronomic_profiles(user: User = Depends(get_current_active_user)):
+    """Lists calibrated soil hydraulic texture profiles and crop phenology profiles."""
+    return {
+        "soil_textures": list(SOIL_TEXTURE_PROFILES.keys()),
+        "crops": list(CROP_PHENOLOGY_PROFILES.keys()),
+        "soil_details": SOIL_TEXTURE_PROFILES,
+        "crop_details": CROP_PHENOLOGY_PROFILES
     }
 
 @router.post("/local-reasoning", response_model=LocalReasoningResponse)
