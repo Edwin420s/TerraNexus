@@ -128,6 +128,10 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
         }
 
         float targetLitres = doc["payload"]["target_volume_litres"] | 1000.0f;
+        if (targetLitres <= 0.0f || targetLitres > 50000.0f) {
+            publishCommandAck(commandId, "failed", "INVALID_TARGET_VOLUME_RANGE");
+            return;
+        }
         int maxDurationSec = doc["payload"]["max_duration_sec"] | MAX_CONTINUOUS_RUN_SEC;
         if (maxDurationSec > MAX_CONTINUOUS_RUN_SEC) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
         if (maxDurationSec <= 0) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
@@ -182,6 +186,12 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
         lastPumpStopTime = millis();
 
         publishCommandAck(commandId, "completed");
+    }
+    else if (strcmp(action, "reset_emergency_stop") == 0) {
+        // Intentional safe reset of latched emergency stop
+        emergencyStopActive = false;
+        dryRunFaultActive = false;
+        publishCommandAck(commandId, "completed", "EMERGENCY_STOP_SAFELY_RESET");
     }
     else if (strcmp(action, "reboot") == 0) {
         publishCommandAck(commandId, "acknowledged");

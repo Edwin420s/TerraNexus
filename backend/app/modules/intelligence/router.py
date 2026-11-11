@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 import httpx
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
 from app.models.entities import User, Recommendation, RecommendationEvidence, IntelligenceModel, FarmDocument
 from app.services.qvac_service import QVACDocumentSearchEngine, QVACSpeechEngine
 from app.services.agronomic_engine import (
@@ -148,10 +148,15 @@ def get_weather(latitude: float = -1.2921, longitude: float = 36.8219):
     except Exception:
         pass
     
-    # Deterministic fallback model data
+    # Dynamic agricultural forecast fallback model data relative to current UTC date
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(3)]
     return {
         "latitude": latitude,
         "longitude": longitude,
+        "status": "offline_forecast_model",
+        "is_fallback": True,
         "current": {
             "temperature_2m": 24.5,
             "relative_humidity_2m": 62,
@@ -160,7 +165,7 @@ def get_weather(latitude: float = -1.2921, longitude: float = 36.8219):
             "weather_code": 1
         },
         "daily": {
-            "time": ["2026-11-09", "2026-11-10", "2026-11-11"],
+            "time": dates,
             "temperature_2m_max": [27.2, 28.1, 26.5],
             "temperature_2m_min": [15.4, 16.0, 14.8],
             "et0_fao_evapotranspiration": [4.3, 4.6, 4.1],
@@ -322,8 +327,9 @@ class ChatDocumentResponse(BaseModel):
     citations: List[DocumentSearchResult]
     execution_mode: str
 
-def _get_org_id(user: User) -> str:
-    return user.memberships[0].organisation_id if user.memberships else "a0000000-0000-0000-0000-000000000001"
+def _get_org_id(user: User, db: Session) -> str:
+    org_ids = get_user_organisation_ids(user, db)
+    return org_ids[0] if org_ids else "a0000000-0000-0000-0000-000000000001"
 
 @router.get("/documents", response_model=List[DocumentResponse])
 def list_documents(
@@ -333,7 +339,7 @@ def list_documents(
     db: Session = Depends(get_db)
 ):
     """List indexed farm agronomy manuals and private operational documents."""
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
     query = db.query(FarmDocument).filter(FarmDocument.organisation_id == org_id)
     if farm_id:
         query = query.filter(FarmDocument.farm_id == farm_id)
@@ -362,7 +368,7 @@ def index_document(
     db: Session = Depends(get_db)
 ):
     """Chunk and index a private document for local vector retrieval (qvac-fabric-llm.cpp)."""
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
     chunks = QVACDocumentSearchEngine.chunk_document(req.content_text)
     doc = FarmDocument(
         organisation_id=org_id,
@@ -398,7 +404,7 @@ def query_documents(
     db: Session = Depends(get_db)
 ):
     """Search private documents using local cosine similarity vector retrieval."""
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
     query = db.query(FarmDocument).filter(FarmDocument.organisation_id == org_id)
     if req.farm_id:
         query = query.filter(FarmDocument.farm_id == req.farm_id)
@@ -439,7 +445,7 @@ def chat_with_documents(
 ):
     """Chat with private documents using local RAG (retrieval + local QVAC model generation)."""
     # 1. Retrieve top matching chunks
-    org_id = _get_org_id(user)
+    org_id = _get_org_id(user, db)
     docs = db.query(FarmDocument).filter(FarmDocument.organisation_id == org_id).all()
     all_chunks = []
     for d in docs:
@@ -467,17 +473,19 @@ def chat_with_documents(
     try:
         from app.services.qvac_server import perform_local_agronomic_inference
         answer = perform_local_agronomic_inference(augmented_prompt)
+        exec_mode = "qvac_local_hardware"
     except Exception:
         answer = (
             f"Based on the retrieved private farm documents and FAO-56 standards: {citations[0].text if citations else ''}. "
             f"The current field parameters should be maintained within the recommended allowable depletion threshold."
         )
+        exec_mode = "retrieval_baseline_fallback"
 
     return ChatDocumentResponse(
         query=req.prompt,
         answer=answer,
         citations=citations,
-        execution_mode="qvac_local_hardware"
+        execution_mode=exec_mode
     )
 
 # ----------------- Speech AI (Whisper ASR & TTS) -----------------
@@ -560,13 +568,15 @@ def voice_assistant(
     try:
         from app.services.qvac_server import perform_local_agronomic_inference
         reasoning = perform_local_agronomic_inference(transcription)
+        exec_mode = "qvac_local_hardware"
     except Exception:
         reasoning = "Soil moisture is currently optimal. Maintain normal scheduled drip cycles."
+        exec_mode = "simulated_edge_stub"
 
     tts_res = QVACSpeechEngine.synthesize_speech(reasoning, req.voice or "agronomist_female")
     return VoiceAssistantResponse(
         transcription=transcription,
         reasoning=reasoning,
         audio_response=SpeechSynthesizeResponse(**tts_res),
-        execution_mode="qvac_local_hardware"
+        execution_mode=exec_mode
     )

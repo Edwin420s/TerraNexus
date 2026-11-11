@@ -197,20 +197,65 @@ def calculate_dynamic_fao56(req: AgronomicAssessmentRequest) -> AgronomicAssessm
     p_adj = max(0.15, min(0.80, base_p + 0.04 * (5.0 - etc_unconstrained)))
     raw_mm = round(p_adj * taw_mm, 2)
     
-    # 6. Current Root Zone Depletion (Dr)
-    if req.soil_readings and len(req.soil_readings) > 0:
-        # Weighted multi-depth integration across root profile
-        total_weight = sum(r.weight or 1.0 for r in req.soil_readings)
-        weighted_moisture = sum(r.moisture_pct * (r.weight or 1.0) for r in req.soil_readings) / total_weight
+    # 6. Current Root Zone Depletion (Dr) — Multi-Depth Soil Layer Integration (FAO-56 Chapter 8)
+    if req.soil_readings and len(req.soil_readings) >= 2:
+        # Sort depth readings ascending
+        sorted_readings = sorted(req.soil_readings, key=lambda r: r.depth_cm)
+        total_depth_m = root_depth_m
+
+        # Compute layer boundaries between probe depths
+        # E.g. probes at 10cm and 30cm in a 0.65m root zone:
+        # Layer 1: 0 to 20cm (thickness 0.20m)
+        # Layer 2: 20cm to 65cm (thickness 0.45m)
+        layers_depl_mm = 0.0
+        weighted_moisture_num = 0.0
+        total_layer_thickness = 0.0
+
+        n = len(sorted_readings)
+        for i, rd in enumerate(sorted_readings):
+            # Determine layer upper and lower boundaries
+            if i == 0:
+                top_m = 0.0
+            else:
+                top_m = (sorted_readings[i - 1].depth_cm + rd.depth_cm) / 200.0
+
+            if i == n - 1:
+                bottom_m = total_depth_m
+            else:
+                bottom_m = (rd.depth_cm + sorted_readings[i + 1].depth_cm) / 200.0
+
+            # Cap bottom at root zone depth
+            bottom_m = min(total_depth_m, max(top_m, bottom_m))
+            layer_thickness_m = max(0.0, bottom_m - top_m)
+
+            if layer_thickness_m <= 0:
+                continue
+
+            layer_taw = 1000.0 * awc_volumetric_fraction * layer_thickness_m
+            layer_moisture = max(0.0, min(soil["sat_pct"], rd.moisture_pct))
+            layer_avail = max(0.0, layer_moisture - pwp)
+            layer_depletion_fraction = max(0.0, min(1.0, 1.0 - (layer_avail / max(0.01, (fc - pwp)))))
+            layer_dr = layer_depletion_fraction * layer_taw
+
+            layers_depl_mm += layer_dr
+            weighted_moisture_num += layer_moisture * layer_thickness_m
+            total_layer_thickness += layer_thickness_m
+
+        weighted_moisture = weighted_moisture_num / max(0.001, total_layer_thickness)
+        current_depletion_mm = round(layers_depl_mm, 2)
+        depletion_fraction = max(0.0, min(1.0, current_depletion_mm / max(0.01, taw_mm)))
+    elif req.soil_readings and len(req.soil_readings) == 1:
+        weighted_moisture = req.soil_readings[0].moisture_pct
+        current_moisture_clamped = max(0.0, min(soil["sat_pct"], weighted_moisture))
+        available_moisture = max(0.0, current_moisture_clamped - pwp)
+        depletion_fraction = max(0.0, min(1.0, 1.0 - (available_moisture / max(0.01, (fc - pwp)))))
+        current_depletion_mm = round(depletion_fraction * taw_mm, 2)
     else:
         weighted_moisture = req.single_moisture_pct if req.single_moisture_pct is not None else 18.0
-
-    # Ensure moisture is physically bounded
-    current_moisture_clamped = max(0.0, min(soil["sat_pct"], weighted_moisture))
-    available_moisture = max(0.0, current_moisture_clamped - pwp)
-    depletion_fraction = max(0.0, min(1.0, 1.0 - (available_moisture / max(0.01, (fc - pwp)))))
-    
-    current_depletion_mm = round(depletion_fraction * taw_mm, 2)
+        current_moisture_clamped = max(0.0, min(soil["sat_pct"], weighted_moisture))
+        available_moisture = max(0.0, current_moisture_clamped - pwp)
+        depletion_fraction = max(0.0, min(1.0, 1.0 - (available_moisture / max(0.01, (fc - pwp)))))
+        current_depletion_mm = round(depletion_fraction * taw_mm, 2)
     depletion_fraction_pct = round(depletion_fraction * 100.0, 1)
     mad_threshold_pct = round(p_adj * 100.0, 1)
     
