@@ -35,6 +35,12 @@
 #define DEFAULT_WIFI_PASS       "TerraAgri2026"
 #define DEFAULT_MQTT_SERVER     "192.168.1.100" // Or terranexus cloud host
 #define DEFAULT_MQTT_PORT       1883
+#define DEFAULT_MQTT_USER       "tnx_field_gateway"
+#define DEFAULT_MQTT_PASS       "tnx_secure_field_pass_2026"
+
+// Provisioned Tenancy Identifiers
+#define DEFAULT_TENANT_ID       "a0000000-0000-0000-0000-000000000001"
+#define DEFAULT_FARM_ID         "c0000000-0000-0000-0000-000000000001"
 
 #define TELEMETRY_INTERVAL_MS   30000 // Send telemetry every 30 seconds
 #define HEARTBEAT_INTERVAL_MS   15000 // Send heartbeat every 15 seconds

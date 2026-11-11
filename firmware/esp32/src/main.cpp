@@ -14,6 +14,10 @@ PubSubClient mqttClient(espClient);
 
 // Device State
 char deviceUID[32];
+char tenantId[64] = DEFAULT_TENANT_ID;
+char farmId[64] = DEFAULT_FARM_ID;
+char mqttUser[64] = DEFAULT_MQTT_USER;
+char mqttPass[64] = DEFAULT_MQTT_PASS;
 char topicTelemetry[128];
 char topicCommands[128];
 char topicCommandAck[128];
@@ -53,17 +57,41 @@ void IRAM_ATTR handleEmergencyStop() {
     closedLoopActive = false;
 }
 
+void loadProvisioningConfig() {
+    if (SPIFFS.exists("/provisioning.json")) {
+        File file = SPIFFS.open("/provisioning.json", "r");
+        if (file) {
+            JsonDocument pDoc;
+            if (!deserializeJson(pDoc, file)) {
+                if (pDoc["organisation_id"].is<const char*>()) {
+                    strncpy(tenantId, pDoc["organisation_id"].as<const char*>(), sizeof(tenantId) - 1);
+                }
+                if (pDoc["farm_id"].is<const char*>()) {
+                    strncpy(farmId, pDoc["farm_id"].as<const char*>(), sizeof(farmId) - 1);
+                }
+                if (pDoc["mqtt_user"].is<const char*>()) {
+                    strncpy(mqttUser, pDoc["mqtt_user"].as<const char*>(), sizeof(mqttUser) - 1);
+                }
+                if (pDoc["mqtt_pass"].is<const char*>()) {
+                    strncpy(mqttPass, pDoc["mqtt_pass"].as<const char*>(), sizeof(mqttPass) - 1);
+                }
+            }
+            file.close();
+        }
+    }
+}
+
 void setupDeviceUID() {
     uint8_t mac[6];
     WiFi.macAddress(mac);
     snprintf(deviceUID, sizeof(deviceUID), "esp32-%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     
-    // Construct MQTT topics according to TNX-API-001 Section 35
-    snprintf(topicTelemetry, sizeof(topicTelemetry), "tnx/a0000000/farm/c0000000/device/%s/telemetry", deviceUID);
-    snprintf(topicCommands, sizeof(topicCommands), "tnx/a0000000/farm/c0000000/device/%s/commands", deviceUID);
-    snprintf(topicCommandAck, sizeof(topicCommandAck), "tnx/a0000000/farm/c0000000/device/%s/commands/ack", deviceUID);
-    snprintf(topicHeartbeat, sizeof(topicHeartbeat), "tnx/a0000000/farm/c0000000/device/%s/heartbeat", deviceUID);
+    // Construct MQTT topics derived dynamically from tenant & farm provisioning
+    snprintf(topicTelemetry, sizeof(topicTelemetry), "tnx/%s/farm/%s/device/%s/telemetry", tenantId, farmId, deviceUID);
+    snprintf(topicCommands, sizeof(topicCommands), "tnx/%s/farm/%s/device/%s/commands", tenantId, farmId, deviceUID);
+    snprintf(topicCommandAck, sizeof(topicCommandAck), "tnx/%s/farm/%s/device/%s/commands/ack", tenantId, farmId, deviceUID);
+    snprintf(topicHeartbeat, sizeof(topicHeartbeat), "tnx/%s/farm/%s/device/%s/heartbeat", tenantId, farmId, deviceUID);
 }
 
 float readSoilMoisture(int pin) {
@@ -222,7 +250,13 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 void reconnectMqtt() {
     if (!mqttClient.connected()) {
-        if (mqttClient.connect(deviceUID)) {
+        bool connected = false;
+        if (strlen(mqttUser) > 0) {
+            connected = mqttClient.connect(deviceUID, mqttUser, mqttPass);
+        } else {
+            connected = mqttClient.connect(deviceUID);
+        }
+        if (connected) {
             mqttClient.subscribe(topicCommands);
             digitalWrite(PIN_STATUS_LED, HIGH);
         } else {
@@ -325,6 +359,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(PIN_FLOW_METER), handleFlowPulse, RISING);
 
     dht.begin();
+    loadProvisioningConfig();
     setupDeviceUID();
 
     // WiFi Setup
