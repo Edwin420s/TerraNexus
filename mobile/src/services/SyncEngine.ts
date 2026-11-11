@@ -1,4 +1,6 @@
 // Mobile Offline Sync Engine (TNX-SYNC-001)
+import { SQL_INIT_LOCAL_DB } from '../database/schema';
+
 export interface SyncOperationItem {
   operation_id: string;
   operation_type: 'create' | 'update' | 'delete';
@@ -9,35 +11,111 @@ export interface SyncOperationItem {
   attempt_count?: number;
 }
 
+export interface ISQLiteDatabase {
+  execAsync?(sql: string): Promise<any>;
+  runAsync?(sql: string, params?: any[]): Promise<any>;
+  getAllAsync?<T>(sql: string, params?: any[]): Promise<T[]>;
+}
+
 export class MobileSyncEngine {
   private apiBaseUrl: string;
   private clientUUID: string;
   private authToken: string | null;
   private outboxQueue: SyncOperationItem[];
+  private db: ISQLiteDatabase | null;
 
   constructor(
     apiBaseUrl = 'http://10.0.2.2:8000/api/v1',
     clientUUID = 'mobile-device-001',
-    authToken: string | null = null
+    authToken: string | null = null,
+    db: ISQLiteDatabase | null = null
   ) {
     this.apiBaseUrl = apiBaseUrl;
     this.clientUUID = clientUUID;
     this.authToken = authToken;
     this.outboxQueue = [];
+    this.db = db;
   }
 
   setAuthToken(token: string | null) {
     this.authToken = token;
   }
 
+  setDatabase(db: ISQLiteDatabase | null) {
+    this.db = db;
+  }
+
   /**
-   * Enqueues an operation into the durable outbox buffer.
+   * Initializes local schema and restores persisted outbox from SQLite.
    */
-  enqueueOperation(op: SyncOperationItem) {
-    this.outboxQueue.push({
+  async initialize(): Promise<void> {
+    if (this.db) {
+      if (this.db.execAsync) {
+        await this.db.execAsync(SQL_INIT_LOCAL_DB);
+      }
+      await this.loadOutboxFromDatabase();
+    }
+  }
+
+  /**
+   * Restores uncommitted outbox queue from SQLite `sync_queue` table.
+   */
+  async loadOutboxFromDatabase(): Promise<void> {
+    if (!this.db || !this.db.getAllAsync) return;
+    try {
+      const rows = await this.db.getAllAsync<{
+        id: string;
+        operation_type: 'create' | 'update' | 'delete';
+        entity_name: string;
+        entity_id: string;
+        payload: string;
+        created_at: string;
+        attempt_count: number;
+      }>('SELECT id, operation_type, entity_name, entity_id, payload, created_at, attempt_count FROM sync_queue ORDER BY created_at ASC');
+
+      this.outboxQueue = rows.map((r) => ({
+        operation_id: r.id,
+        operation_type: r.operation_type,
+        entity_name: r.entity_name,
+        entity_id: r.entity_id,
+        client_timestamp: r.created_at,
+        payload: JSON.parse(r.payload),
+        attempt_count: r.attempt_count,
+      }));
+    } catch (e) {
+      console.warn('Could not restore outbox from SQLite:', e);
+    }
+  }
+
+  /**
+   * Enqueues an operation into durable SQLite storage and in-memory queue.
+   */
+  async enqueueOperation(op: SyncOperationItem): Promise<void> {
+    const item: SyncOperationItem = {
       ...op,
       attempt_count: op.attempt_count || 0,
-    });
+    };
+    this.outboxQueue.push(item);
+
+    if (this.db && this.db.runAsync) {
+      try {
+        await this.db.runAsync(
+          `INSERT OR REPLACE INTO sync_queue (id, operation_type, entity_name, entity_id, payload, created_at, attempt_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.operation_id,
+            item.operation_type,
+            item.entity_name,
+            item.entity_id,
+            JSON.stringify(item.payload),
+            item.client_timestamp,
+            item.attempt_count,
+          ]
+        );
+      } catch (err) {
+        console.warn('Failed to persist sync operation to SQLite:', err);
+      }
+    }
   }
 
   getOutboxQueue(): SyncOperationItem[] {
@@ -77,15 +155,36 @@ export class MobileSyncEngine {
       }
 
       const result = await response.json();
-      // On successful push, remove acknowledged operations from outbox
-      const pushedIds = new Set(operations.map((o) => o.operation_id));
-      this.outboxQueue = this.outboxQueue.filter((o) => !pushedIds.has(o.operation_id));
+      
+      // On successful push, remove acknowledged operations from durable SQLite storage & memory
+      const pushedIds = operations.map((o) => o.operation_id);
+      const pushedSet = new Set(pushedIds);
+      this.outboxQueue = this.outboxQueue.filter((o) => !pushedSet.has(o.operation_id));
+
+      if (this.db && this.db.runAsync) {
+        for (const id of pushedIds) {
+          try {
+            await this.db.runAsync('DELETE FROM sync_queue WHERE id = ?', [id]);
+          } catch (e) {
+            console.warn(`Failed to delete acknowledged operation ${id} from SQLite:`, e);
+          }
+        }
+      }
+
       return result;
     } catch (err) {
-      console.warn('Sync push network error, retaining operations in outbox buffer:', err);
+      console.warn('Sync push network error, retaining operations in durable outbox:', err);
       // Increment attempt count for retained operations
       for (const op of operations) {
         op.attempt_count = (op.attempt_count || 0) + 1;
+        if (this.db && this.db.runAsync) {
+          try {
+            await this.db.runAsync('UPDATE sync_queue SET attempt_count = ? WHERE id = ?', [
+              op.attempt_count,
+              op.operation_id,
+            ]);
+          } catch (_) {}
+        }
       }
       return { status: 'offline_buffered', queue_depth: this.outboxQueue.length, error: String(err) };
     }
