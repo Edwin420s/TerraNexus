@@ -1,4 +1,5 @@
 import uuid
+import time
 from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
@@ -57,13 +58,14 @@ def test_tc_telem_001_canonical_telemetry_and_batch_ingestion():
     dev_uuid = str(uuid.UUID(device_id)) if "-" in device_id else str(uuid.uuid4())
 
     # 1. Single ingestion
+    base_seq = int(time.time() * 10) % 10000000 + 1000
     event_id = str(uuid.uuid4())
     payload = {
         "event_id": event_id,
         "schema_version": "1.0",
         "device_id": dev_uuid,
         "observed_at": datetime.now(timezone.utc).isoformat(),
-        "sequence": 501,
+        "sequence": base_seq + 1,
         "measurements": [
             {"type": "soil_moisture", "value": 29.8, "unit": "%", "depth_cm": 15.0},
             {"type": "ambient_temp", "value": 22.4, "unit": "°C"},
@@ -81,7 +83,7 @@ def test_tc_telem_001_canonical_telemetry_and_batch_ingestion():
             "schema_version": "1.0",
             "device_id": dev_uuid,
             "observed_at": datetime.now(timezone.utc).isoformat(),
-            "sequence": 502,
+            "sequence": base_seq + 2,
             "measurements": [
                 {"type": "battery_voltage", "value": 3.92, "unit": "V"}
             ]
@@ -91,7 +93,7 @@ def test_tc_telem_001_canonical_telemetry_and_batch_ingestion():
             "schema_version": "1.0",
             "device_id": dev_uuid,
             "observed_at": datetime.now(timezone.utc).isoformat(),
-            "sequence": 503,
+            "sequence": base_seq + 3,
             "measurements": [
                 {"type": "soil_moisture", "value": 30.1, "unit": "%", "depth_cm": 30.0}
             ]
@@ -263,6 +265,67 @@ def test_tc_dev_006_device_provisioning_credential_lifecycle():
     # Cannot rotate on revoked device
     fail_rot = client.post(f"/api/v1/devices/{dev_id}/rotate-credentials")
     assert fail_rot.status_code == 400
+
+def test_tc_dev_007_http_telemetry_token_auth_and_sequence_replay():
+    """Verify HTTP telemetry ingestion enforces token authentication and detects sequence replay attacks."""
+    farms = client.get("/api/v1/farms").json()
+    farm_id = farms[0]["id"]
+
+    # Register and provision a new device with token
+    reg_resp = client.post("/api/v1/devices", json={
+        "farm_id": farm_id,
+        "device_uid": f"esp32-auth-{uuid.uuid4().hex[:6]}",
+        "name": "Auth Probe",
+        "device_type": "esp32_sensor_node"
+    })
+    dev_id = reg_resp.json()["id"]
+    prov_resp = client.post(f"/api/v1/devices/{dev_id}/provision")
+    token = prov_resp.json()["device_token"]
+
+    t_payload = {
+        "event_id": str(uuid.uuid4()),
+        "device_id": dev_id,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "sequence": 100,
+        "measurements": [{"type": "soil_moisture", "value": 38.5, "unit": "%"}]
+    }
+
+    # 1. Missing token -> 401 Unauthorized
+    resp_no_token = client.post("/api/v1/telemetry", json=t_payload)
+    assert resp_no_token.status_code == 401
+
+    # 2. Invalid token -> 401 Unauthorized
+    resp_bad_token = client.post("/api/v1/telemetry", json=t_payload, headers={"X-Device-Token": "bad-token"})
+    assert resp_bad_token.status_code == 401
+
+    # 3. Valid token -> 202 Accepted
+    resp_good = client.post("/api/v1/telemetry", json=t_payload, headers={"X-Device-Token": token})
+    assert resp_good.status_code == 202
+    assert resp_good.json()["status"] == "persisted_and_processed"
+
+    # 4. Replay sequence attack (sequence 100 <= 100) -> 400 Bad Request
+    t_replay = {
+        "event_id": str(uuid.uuid4()),
+        "device_id": dev_id,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "sequence": 100,
+        "measurements": [{"type": "soil_moisture", "value": 39.0, "unit": "%"}]
+    }
+    resp_replay = client.post("/api/v1/telemetry", json=t_replay, headers={"X-Device-Token": token})
+    assert resp_replay.status_code == 400
+    assert "Replay detected" in resp_replay.json()["detail"]
+
+    # 5. Higher sequence (sequence 101 > 100) -> 202 Accepted
+    t_next = {
+        "event_id": str(uuid.uuid4()),
+        "device_id": dev_id,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "sequence": 101,
+        "measurements": [{"type": "soil_moisture", "value": 39.5, "unit": "%"}]
+    }
+    resp_next = client.post("/api/v1/telemetry", json=t_next, headers={"X-Device-Token": token})
+    assert resp_next.status_code == 202
+
 
 
 

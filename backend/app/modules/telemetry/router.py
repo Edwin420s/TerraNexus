@@ -1,7 +1,7 @@
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.auth import get_current_active_user, get_user_organisation_ids
@@ -58,8 +58,13 @@ def validate_sensor_range(measurement_type: str, value: float) -> tuple[bool, fl
     return True, 1.0
 
 @router.post("/telemetry", response_model=TelemetryAccepted, status_code=status.HTTP_202_ACCEPTED)
-async def ingest_telemetry(payload: TelemetryEnvelope, db: Session = Depends(get_db)):
-    """Durable ingestion and quality evaluation for canonical telemetry packets."""
+async def ingest_telemetry(
+    payload: TelemetryEnvelope,
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Durable ingestion, device authentication, and quality evaluation for canonical telemetry packets."""
     event_id_str = str(payload.event_id) if payload.event_id else None
 
     # Deduplicate incoming telemetry on event_id
@@ -89,6 +94,32 @@ async def ingest_telemetry(payload: TelemetryEnvelope, db: Session = Depends(get
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Device is inactive or revoked"
         )
+
+    # Verifiable Device Authentication
+    cfg = dict(device.config) if isinstance(device.config, dict) else {}
+    expected_token = cfg.get("device_token")
+    if expected_token:
+        provided_token = x_device_token
+        if not provided_token and authorization:
+            if authorization.startswith("Bearer "):
+                provided_token = authorization[7:]
+            else:
+                provided_token = authorization
+        if not provided_token or provided_token != expected_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or missing device authentication token"
+            )
+
+    # Sequence validation & Anti-Replay
+    if payload.sequence is not None and payload.sequence > 0:
+        last_seq = cfg.get("last_telemetry_sequence", -1)
+        if payload.sequence <= last_seq:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Replay detected: telemetry sequence {payload.sequence} <= last sequence {last_seq}"
+            )
+        cfg["last_telemetry_sequence"] = payload.sequence
 
     org_id = device.organisation_id
     farm_id = device.farm_id
@@ -134,9 +165,11 @@ async def ingest_telemetry(payload: TelemetryEnvelope, db: Session = Depends(get
         )
         db.add(audit)
 
-    if device:
-        device.last_telemetry_at = datetime.now(timezone.utc)
-        device.connection_status = "online"
+    now_utc = datetime.now(timezone.utc)
+    device.last_telemetry_at = now_utc
+    device.last_heartbeat_at = now_utc
+    device.connection_status = "online"
+    device.config = cfg
 
     db.commit()
 
@@ -148,10 +181,15 @@ async def ingest_telemetry(payload: TelemetryEnvelope, db: Session = Depends(get
     )
 
 @router.post("/telemetry/batch", response_model=List[TelemetryAccepted], status_code=status.HTTP_202_ACCEPTED)
-async def ingest_telemetry_batch(payloads: List[TelemetryEnvelope], db: Session = Depends(get_db)):
+async def ingest_telemetry_batch(
+    payloads: List[TelemetryEnvelope],
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
     results = []
     for p in payloads:
-        res = await ingest_telemetry(p, db)
+        res = await ingest_telemetry(p, x_device_token=x_device_token, authorization=authorization, db=db)
         results.append(res)
     return results
 
