@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
-from app.models.entities import User, ClientDevice, SyncOperation, SyncConflict, Task, FieldObservation, Field
+from app.models.entities import User, ClientDevice, SyncOperation, SyncConflict, Task, FieldObservation, Field, Alert, Recommendation
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -225,12 +225,14 @@ def sync_pull(req: SyncPullRequest, user: User = Depends(get_current_active_user
     client_dev = db.query(ClientDevice).filter(ClientDevice.client_uuid == req.client_uuid).first()
     if client_dev and client_dev.organisation_id not in user_org_ids:
         raise HTTPException(status_code=403, detail="Client device belongs to a different organisation")
-    new_cursor = (req.since_cursor or 0) + 1
     
-    # Retrieve modified tasks scoped to user's organisations
-    tasks = db.query(Task).filter(Task.organisation_id.in_(user_org_ids)).order_by(Task.updated_at.desc()).limit(20).all()
-    changes = [
-        {
+    current_cursor = req.since_cursor or 0
+    changes: List[Dict[str, Any]] = []
+
+    # 1. Retrieve modified tasks
+    tasks = db.query(Task).filter(Task.organisation_id.in_(user_org_ids)).order_by(Task.updated_at.desc()).limit(25).all()
+    for t in tasks:
+        changes.append({
             "entity_name": "task",
             "entity_id": t.id,
             "operation": "upsert",
@@ -239,10 +241,55 @@ def sync_pull(req: SyncPullRequest, user: User = Depends(get_current_active_user
                 "title": t.title,
                 "status": t.status,
                 "priority": t.priority,
-                "due_date": t.due_date.isoformat() if t.due_date else None
+                "due_date": t.due_date.isoformat() if t.due_date else None,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None
             }
-        } for t in tasks
-    ]
+        })
+
+    # 2. Retrieve recent field observations
+    observations = db.query(FieldObservation).filter(
+        FieldObservation.organisation_id.in_(user_org_ids)
+    ).order_by(FieldObservation.created_at.desc()).limit(25).all()
+    for obs in observations:
+        changes.append({
+            "entity_name": "field_observation",
+            "entity_id": obs.id,
+            "operation": "upsert",
+            "payload": {
+                "id": obs.id,
+                "field_id": obs.field_id,
+                "observation_type": obs.observation_type,
+                "description": obs.description,
+                "severity": obs.severity,
+                "created_at": obs.created_at.isoformat() if obs.created_at else None
+            }
+        })
+
+    # 3. Retrieve active agronomic alerts
+    alerts = db.query(Alert).filter(
+        Alert.organisation_id.in_(user_org_ids)
+    ).order_by(Alert.triggered_at.desc()).limit(20).all()
+    for a in alerts:
+        changes.append({
+            "entity_name": "alert",
+            "entity_id": a.id,
+            "operation": "upsert",
+            "payload": {
+                "id": a.id,
+                "severity": a.severity,
+                "title": a.title,
+                "message": a.message,
+                "status": a.status,
+                "created_at": a.triggered_at.isoformat() if a.triggered_at else None
+            }
+        })
+
+    # Compute monotonic sequential cursor
+    new_cursor = current_cursor + len(changes) if len(changes) > 0 else current_cursor + 1
+    if client_dev:
+        client_dev.sync_cursor = max(client_dev.sync_cursor or 0, new_cursor)
+        client_dev.last_sync_at = datetime.now(timezone.utc)
+        db.commit()
 
     return SyncPullResponse(
         client_uuid=req.client_uuid,
