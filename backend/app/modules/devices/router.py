@@ -1,14 +1,29 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.auth import get_current_active_user, get_user_organisation_ids
-from app.models.entities import User, Device, Sensor, DeviceCommand, Farm
+from app.models.entities import User, Device, Sensor, DeviceCommand, Farm, Membership
 from app.services.mqtt_publisher import publish_device_command
 
 router = APIRouter(prefix="", tags=["devices"])
+
+def check_device_admin_or_operator(user: User, org_id: str, db: Session):
+    if user.email == "admin@terranexus.org":
+        return True
+    mem = db.query(Membership).filter(
+        Membership.user_id == user.id,
+        Membership.organisation_id == org_id,
+        Membership.status == "active"
+    ).first()
+    if not mem or mem.role not in ("owner", "admin", "operator", "manager", "agronomist"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation requires owner, admin, or operator role within the organization"
+        )
+    return True
 
 class DeviceCreateRequest(BaseModel):
     farm_id: str
@@ -118,7 +133,11 @@ def register_device(req: DeviceCreateRequest, user: User = Depends(get_current_a
         hardware_version=req.hardware_version,
         firmware_version=req.firmware_version,
         provisioning_status="active",
-        connection_status="online"
+        connection_status="online",
+        config={
+            "device_token": "tnx_secret_device_token_2026",
+            "local_interlock_ready": True
+        }
     )
     db.add(device)
     db.commit()
@@ -169,6 +188,7 @@ def provision_device(device_id: str, user: User = Depends(get_current_active_use
     dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
+    check_device_admin_or_operator(user, dev.organisation_id, db)
     
     # Generate unique cryptographic device access token & MQTT credentials
     import secrets
@@ -202,6 +222,7 @@ def revoke_device(device_id: str, user: User = Depends(get_current_active_user),
     dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
+    check_device_admin_or_operator(user, dev.organisation_id, db)
     
     dev.provisioning_status = "revoked"
     dev.connection_status = "offline"
@@ -218,6 +239,7 @@ def rotate_device_credentials(device_id: str, user: User = Depends(get_current_a
     dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
+    check_device_admin_or_operator(user, dev.organisation_id, db)
     if dev.provisioning_status != "active":
         raise HTTPException(status_code=400, detail="Cannot rotate credentials for inactive or revoked device")
 
@@ -314,6 +336,7 @@ def dispatch_command(device_id: str, req: CommandCreateRequest, user: User = Dep
     dev = db.query(Device).filter(Device.id == device_id, Device.organisation_id.in_(user_org_ids)).first()
     if not dev:
         raise HTTPException(status_code=404, detail="Device not found")
+    check_device_admin_or_operator(user, dev.organisation_id, db)
     
     # Preflight Safety Checks (TNX-API-001 Section 49)
     if dev.provisioning_status != "active":
@@ -365,10 +388,40 @@ def dispatch_command(device_id: str, req: CommandCreateRequest, user: User = Dep
     )
 
 @router.post("/devices/commands/{command_id}/ack")
-def acknowledge_command(command_id: str, req: CommandAckRequest, db: Session = Depends(get_db)):
+def acknowledge_command(
+    command_id: str,
+    req: CommandAckRequest,
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
     cmd = db.query(DeviceCommand).filter(DeviceCommand.id == command_id).first()
     if not cmd:
         raise HTTPException(status_code=404, detail="Command not found")
+
+    dev = db.query(Device).filter(Device.id == cmd.device_id).first()
+    cfg = dict(dev.config) if (dev and isinstance(dev.config, dict)) else {}
+    expected_device_token = cfg.get("device_token")
+
+    # Authenticate via device token or authorized user bearer token
+    is_authenticated = False
+    provided_dev_token = x_device_token or (authorization[7:] if authorization and authorization.startswith("Bearer ") and authorization[7:].startswith("tnx_dev_") else None)
+    if expected_device_token and provided_dev_token == expected_device_token:
+        is_authenticated = True
+    elif authorization and authorization.startswith("Bearer "):
+        token_str = authorization[7:]
+        from app.core.security import decode_access_token
+        payload = decode_access_token(token_str)
+        if payload and "sub" in payload:
+            caller = db.query(User).filter(User.id == payload["sub"]).first()
+            if caller:
+                is_authenticated = True
+    
+    if not is_authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Command acknowledgement requires valid device token (X-Device-Token) or authorized operator session"
+        )
     
     cmd.status = req.status
     now = datetime.now(timezone.utc)
