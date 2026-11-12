@@ -99,9 +99,12 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
 
         if op.entity_name == "task" and op.operation_type == "update":
             existing = db.query(Task).filter(Task.id == op.entity_id, Task.organisation_id.in_(user_org_ids)).first()
-            if existing and existing.updated_at and existing.updated_at > client_ts:
-                is_conflict = True
-                resolution_strategy = "server_wins"
+            if existing and existing.updated_at:
+                srv_ts = existing.updated_at.replace(tzinfo=timezone.utc) if existing.updated_at.tzinfo is None else existing.updated_at
+                cli_ts = client_ts.replace(tzinfo=timezone.utc) if client_ts.tzinfo is None else client_ts
+                if srv_ts > cli_ts:
+                    is_conflict = True
+                    resolution_strategy = "server_wins"
 
         elif op.entity_name == "field_observation" and op.operation_type == "update":
             # Versioned observation history: preserve previous observation as an audit record
@@ -175,8 +178,20 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                 if existing:
                     if "status" in op.payload:
                         existing.status = op.payload["status"]
-                applied += 1
-                op_applied = True
+                    if "title" in op.payload:
+                        existing.title = op.payload["title"]
+                    if "priority" in op.payload:
+                        existing.priority = op.payload["priority"]
+                    applied += 1
+                    op_applied = True
+                else:
+                    sync_op.status = "rejected"
+                    sync_op.conflict_reason = f"Target task {op.entity_id} not found"
+                    results.append(SyncOperationResult(
+                        operation_id=op.operation_id,
+                        status="rejected",
+                        error=sync_op.conflict_reason
+                    ))
             elif op.entity_name == "task" and op.operation_type == "create":
                 task = Task(
                     id=op.entity_id,
@@ -188,7 +203,19 @@ def sync_push(req: SyncPushRequest, user: User = Depends(get_current_active_user
                 db.add(task)
                 applied += 1
                 op_applied = True
-            elif op.entity_name in ("field_observation", "task") and op.operation_type in ("delete", "archive"):
+            elif op.entity_name == "task" and op.operation_type in ("delete", "archive"):
+                existing = db.query(Task).filter(Task.id == op.entity_id, Task.organisation_id.in_(user_org_ids)).first()
+                if existing:
+                    if op.operation_type == "archive":
+                        existing.status = "archived"
+                    else:
+                        db.delete(existing)
+                applied += 1
+                op_applied = True
+            elif op.entity_name == "field_observation" and op.operation_type in ("delete", "archive"):
+                obs = db.query(FieldObservation).filter(FieldObservation.id == op.entity_id, FieldObservation.organisation_id.in_(user_org_ids)).first()
+                if obs:
+                    db.delete(obs)
                 applied += 1
                 op_applied = True
             else:

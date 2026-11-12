@@ -125,8 +125,29 @@ export class MobileSyncEngine {
     return [...this.outboxQueue];
   }
 
-  clearOutboxQueue() {
+  async clearOutboxQueue(): Promise<void> {
     this.outboxQueue = [];
+    if (this.db && this.db.runAsync) {
+      try {
+        await this.db.runAsync('DELETE FROM sync_queue');
+      } catch (e) {
+        console.warn('Failed to clear sync_queue table from SQLite:', e);
+      }
+    }
+  }
+
+  async getPersistedCursor(): Promise<number> {
+    if (this.db && this.db.getAllAsync) {
+      try {
+        const rows = await this.db.getAllAsync<{ key: string; value: string }>(
+          "SELECT value FROM sync_meta WHERE key = 'sync_cursor'"
+        );
+        if (rows.length > 0) {
+          return parseInt(rows[0].value, 10) || 0;
+        }
+      } catch (_) {}
+    }
+    return 0;
   }
 
   private getRequestHeaders(): Record<string, string> {
@@ -220,6 +241,65 @@ export class MobileSyncEngine {
       }
 
       const result = await response.json();
+
+      if (this.db && this.db.runAsync && Array.isArray(result.changes)) {
+        for (const change of result.changes) {
+          if (change.entity_name === 'task' && change.payload) {
+            const p = change.payload;
+            try {
+              await this.db.runAsync(
+                `INSERT OR REPLACE INTO local_tasks (id, farm_id, field_id, title, description, task_type, priority, status, due_date, updated_at, sync_status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+                [
+                  p.id,
+                  p.farm_id || 'default-farm',
+                  p.field_id || null,
+                  p.title || 'Untitled Task',
+                  p.description || '',
+                  p.task_type || 'general',
+                  p.priority || 'medium',
+                  p.status || 'pending',
+                  p.due_date || null,
+                  p.updated_at || new Date().toISOString()
+                ]
+              );
+            } catch (err) {
+              console.warn('Failed to insert pulled task into SQLite:', err);
+            }
+          } else if (change.entity_name === 'field_observation' && change.payload) {
+            const p = change.payload;
+            try {
+              await this.db.runAsync(
+                `INSERT OR REPLACE INTO local_field_observations (id, field_id, observation_type, description, severity, latitude, longitude, observed_at, sync_status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+                [
+                  p.id,
+                  p.field_id || 'default-field',
+                  p.observation_type || 'scouting',
+                  p.description || '',
+                  p.severity || 'medium',
+                  p.latitude || null,
+                  p.longitude || null,
+                  p.created_at || new Date().toISOString()
+                ]
+              );
+            } catch (err) {
+              console.warn('Failed to insert pulled field observation into SQLite:', err);
+            }
+          }
+        }
+        if (result.new_sync_cursor !== undefined) {
+          try {
+            await this.db.runAsync(
+              `INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('sync_cursor', ?)`,
+              [String(result.new_sync_cursor)]
+            );
+          } catch (err) {
+            console.warn('Failed to update sync_cursor in SQLite sync_meta:', err);
+          }
+        }
+      }
+
       return result;
     } catch (err) {
       console.warn('Sync pull network error:', err);
