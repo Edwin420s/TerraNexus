@@ -25,7 +25,7 @@ from app.services.qvac_server import start_server
 
 def main():
     parser = argparse.ArgumentParser(description="Start TerraNexus QVAC Local Hardware AI Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Binding host interface (default: 0.0.0.0)")
+    parser.add_argument("--host", default="127.0.0.1", help="Binding host interface (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8080, help="Listening port (default: 8080)")
     args = parser.parse_args()
 

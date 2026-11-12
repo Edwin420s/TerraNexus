@@ -140,17 +140,30 @@ def perform_local_neural_inference(prompt: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         raise RuntimeError(f"Invalid JSON returned from QVAC runner: {proc.stdout.strip()[:200]}")
 
+def perform_local_agronomic_inference(prompt: str) -> str:
+    """
+    Genuine local agronomic inference facade for QVAC edge execution.
+    Executes neural model weights on-device, propagating errors without silent fallbacks.
+    """
+    res = perform_local_neural_inference(prompt)
+    if not res or "response_text" not in res:
+        raise RuntimeError("QVAC neural inference produced empty response")
+    return res["response_text"]
+
 @app.get("/health")
 def health_check():
+    current_dir = pathlib.Path(__file__).resolve().parent
+    repo_root = current_dir.parent.parent.parent
+    runner_exists = (repo_root / "scripts" / "qvac-infer.mjs").exists()
     return {
-        "status": "healthy",
+        "status": "healthy" if runner_exists else "degraded",
         "service": "qvac_local_inference_server",
         "models": [
             {
                 "id": MODEL_NAME,
                 "type": "qvac_local_hardware",
                 "engine": "@qvac/sdk 0.22.0 (Qwen3-0.6B-Q4_0.gguf on CPU)",
-                "verified": True
+                "verified": runner_exists
             },
             {
                 "id": RULE_MODEL_NAME,
@@ -159,7 +172,7 @@ def health_check():
                 "verified": True
             }
         ],
-        "active_engine": "qvac_local_hardware",
+        "active_engine": "qvac_local_hardware" if runner_exists else "rule_based_fao56",
         "rule_based_engine_available": True,
         "offline": True
     }
@@ -234,7 +247,7 @@ def create_chat_completion(req: ChatCompletionRequest):
         "execution_mode": execution_mode
     }
 
-def start_server(host: str = "0.0.0.0", port: int = 8080):
+def start_server(host: str = "127.0.0.1", port: int = 8080):
     print("=" * 70)
     print("TERRANEXUS: QVAC LOCAL HARDWARE AI ENGINE")
     print(f"Model: {MODEL_NAME} (Offline GGUF Quantized 4-bit)")
@@ -245,6 +258,6 @@ def start_server(host: str = "0.0.0.0", port: int = 8080):
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 if __name__ == "__main__":
-    host = sys.argv[1] if len(sys.argv) > 1 else "0.0.0.0"
+    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
     start_server(host, port)

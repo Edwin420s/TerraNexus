@@ -46,12 +46,13 @@ async function main() {
   let resources;
   try {
     resources = await getSystemResources({ sample: false });
-    const ramBytes = resources.capabilities.memory?.totalBytes?.value;
+    const ramBytes = resources?.capabilities?.memory?.totalBytes?.value;
     const ramGb = ramBytes ? (ramBytes / (1024 ** 3)).toFixed(2) + " GB" : "N/A";
-    const cpuModel = resources.capabilities.cpu?.model?.value || "x86_64 CPU";
+    const cpuModel = resources?.capabilities?.cpu?.model?.value || "x86_64 CPU";
     console.log(`[Host Hardware] CPU: ${cpuModel} | RAM: ${ramGb}`);
   } catch (err) {
-    console.warn(`[WARN] getSystemResources diagnostics note: ${err.message}`);
+    console.error(`❌ FATAL: getSystemResources diagnostics failed: ${err.message}`);
+    process.exit(1);
   }
 
   // Step 2: Load Model via @qvac/sdk
@@ -80,7 +81,7 @@ async function main() {
   const loadDurationMs = performance.now() - tLoadStart;
   console.log(`\n[2/3] Model loaded successfully in ${loadDurationMs.toFixed(0)} ms. Local Model ID: ${modelId}`);
 
-  // Step 3: Run Completion Stream
+  // Step 3: Run Completion Stream within robust finally-cleanup lifecycle
   console.log(`\n[3/3] Executing on-device neural completion...`);
   console.log(`Prompt: "${prompt}"\n`);
   console.log("--- MODEL RESPONSE STREAM START ---");
@@ -89,6 +90,7 @@ async function main() {
   let firstTokenMs = 0;
   let tokenCount = 0;
   let generatedText = "";
+  let inferDurationSec = 0;
 
   try {
     const run = completion({
@@ -110,6 +112,7 @@ async function main() {
       generatedText += token;
       tokenCount++;
     }
+    inferDurationSec = (performance.now() - tInferStart) / 1000;
   } catch (err) {
     console.error(`\n❌ FATAL: Completion generation failed: ${err.message}`);
     console.error(err.stack);
@@ -117,22 +120,30 @@ async function main() {
       await unloadModel({ modelId });
     } catch (_) {}
     process.exit(1);
+  } finally {
+    // Step 4: Strict Unload Model to free memory (Fatal if unload fails)
+    try {
+      if (modelId) {
+        await unloadModel({ modelId });
+        console.log(`\n[Unload] Model ${modelId} successfully unloaded from memory.`);
+      }
+    } catch (err) {
+      console.error(`\n❌ FATAL: Model unload failed: ${err.message}`);
+      process.exit(1);
+    }
   }
-
-  const inferDurationSec = (performance.now() - tInferStart) / 1000;
-  const tokensPerSec = tokenCount > 0 && inferDurationSec > 0
-    ? (tokenCount / inferDurationSec).toFixed(2)
-    : "0.00";
 
   console.log("\n--- MODEL RESPONSE STREAM END ---\n");
 
-  // Step 4: Unload Model to free memory
-  try {
-    await unloadModel({ modelId });
-    console.log(`[Unload] Model ${modelId} successfully unloaded from memory.`);
-  } catch (err) {
-    console.warn(`[WARN] Model unload note: ${err.message}`);
+  // Step 5: Strictly reject empty generations (zero tokens)
+  if (tokenCount === 0 || !generatedText.trim()) {
+    console.error("❌ FATAL: QVAC model produced 0 tokens. Offline inference failed.");
+    process.exit(1);
   }
+
+  const tokensPerSec = inferDurationSec > 0
+    ? (tokenCount / inferDurationSec).toFixed(2)
+    : "0.00";
 
   // Step 5: Report Truthful Measured Benchmark Metrics
   console.log("\n======================================================================");
