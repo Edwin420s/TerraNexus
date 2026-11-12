@@ -345,7 +345,7 @@ TerraNexus was designed from the ground up to operate reliably in rural, low-con
 cd TerraNexus
 make test-all
 ```
-Executes the complete backend test suite (21 test suites, 91 comprehensive test cases) and verifies the frontend production bundle compilation.
+Executes the complete backend test suite (21 test suites, 93 comprehensive test cases) and verifies the frontend production bundle compilation.
 
 ### Run End-to-End System Verification
 ```bash
@@ -410,7 +410,7 @@ TerraNexus/
 │   │   │   ├── reporting/   # Farm & water efficiency reports
 │   │   │   └── admin/       # Super-admin audit, diagnostics, health
 │   │   └── services/        # Background MQTT telemetry consumer
-│   ├── tests/               # 21 comprehensive pytest test suites (91 test cases)
+│   ├── tests/               # 21 comprehensive pytest test suites (93 test cases)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── database/

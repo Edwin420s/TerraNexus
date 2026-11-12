@@ -52,10 +52,11 @@ The independent physical safety boundary was exhaustively validated:
 
 ## 4. Local Hardware AI & QVAC Offline Inference
 
-1. **Standalone QVAC Model Server**: Launched via `python3 scripts/run_qvac_server.py --port 8080` (or `make run-qvac`).
-2. **Wi-Fi Severance Verification**: Executed with external network disconnected.
-3. **Execution Mode**: Confirmed returning `execution_mode: "qvac_local_hardware"`.
-4. **Dynamic Reasoning**: Validated dynamic calculation of root zone depletion percentage, soil hydraulic boundaries (PWP/FC), and actionable FAO-56 irrigation run durations.
+1. **Standalone QVAC Model Server**: Launched via `python3 scripts/run_qvac_server.py --port 8080` (or `make run-qvac`), binding locally to `127.0.0.1`.
+2. **Fail-Closed Offline Execution**: All silent fallbacks and mock responses eliminated across `chat_with_documents`, `voice_assistant`, and `perform_local_agronomic_inference`. When neural runners are absent, the engine returns explicit HTTP 503 or routes to an explicitly annotated deterministic FAO-56 continuum execution (`execution_mode: "rule_based_fao56"`).
+3. **Execution Modes**: Confirmed returning `execution_mode: "qvac_local_hardware"` when running under the neural runner and `rule_based_fao56` when explicitly selected.
+4. **Physical Network Severance Verification**: Code-level offline model runner and local inference fail-closed paths verified in CI; physical Wi-Fi-off execution on field silicon scheduled during on-farm hardware deployment.
+5. **Dynamic Reasoning**: Validated dynamic calculation of root zone depletion percentage, soil hydraulic boundaries (PWP/FC), and actionable FAO-56 irrigation run durations.
 
 ---
 
