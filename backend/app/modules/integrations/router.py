@@ -1,9 +1,10 @@
+import secrets
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
 from app.models.entities import User, ApiApplication, Webhook
 
 router = APIRouter(prefix="/developer", tags=["developer"])
@@ -29,12 +30,13 @@ class WebhookResponse(BaseModel):
 class WebhookCreateRequest(BaseModel):
     name: str
     target_url: str
-    secret_token: Optional[str] = "whsec_terranexus_demo"
+    secret_token: Optional[str] = None
     event_subscriptions: Optional[List[str]] = ["telemetry.ingested", "alert.triggered"]
 
 @router.get("/applications", response_model=List[ApiAppResponse])
 def list_applications(user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    apps = db.query(ApiApplication).all()
+    user_org_ids = get_user_organisation_ids(user, db)
+    apps = db.query(ApiApplication).filter(ApiApplication.organisation_id.in_(user_org_ids)).all()
     if not apps:
         return [
             ApiAppResponse(
@@ -57,11 +59,12 @@ def list_applications(user: User = Depends(get_current_active_user), db: Session
 
 @router.post("/applications", response_model=ApiAppResponse)
 def create_application(req: ApiAppCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    org_id = get_current_user_organisation_id(user, db)
     app = ApiApplication(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=org_id,
         name=req.name,
         description=req.description,
-        api_key_prefix="tnx_live_key",
+        api_key_prefix=f"tnx_live_{secrets.token_hex(4)}",
         status="active"
     )
     db.add(app)
@@ -77,7 +80,8 @@ def create_application(req: ApiAppCreateRequest, user: User = Depends(get_curren
 
 @router.get("/webhooks", response_model=List[WebhookResponse])
 def list_webhooks(user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    webhooks = db.query(Webhook).all()
+    user_org_ids = get_user_organisation_ids(user, db)
+    webhooks = db.query(Webhook).filter(Webhook.organisation_id.in_(user_org_ids)).all()
     if not webhooks:
         return [
             WebhookResponse(
@@ -100,11 +104,13 @@ def list_webhooks(user: User = Depends(get_current_active_user), db: Session = D
 
 @router.post("/webhooks", response_model=WebhookResponse)
 def create_webhook(req: WebhookCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    org_id = get_current_user_organisation_id(user, db)
+    secret = req.secret_token or f"whsec_{secrets.token_urlsafe(24)}"
     wh = Webhook(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=org_id,
         name=req.name,
         target_url=req.target_url,
-        secret_token=req.secret_token or "secret",
+        secret_token=secret,
         event_subscriptions=req.event_subscriptions or [],
         is_active=True
     )
