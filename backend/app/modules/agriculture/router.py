@@ -4,8 +4,8 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
-from app.models.entities import User, Crop, CropVariety, GrowingSeason, FieldCrop
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
+from app.models.entities import User, Crop, CropVariety, GrowingSeason, FieldCrop, Farm, Field
 
 router = APIRouter(prefix="", tags=["agriculture"])
 
@@ -124,7 +124,8 @@ def get_crop(crop_id: str, user: User = Depends(get_current_active_user), db: Se
 
 @router.get("/seasons", response_model=List[SeasonResponse])
 def list_seasons(user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    seasons = db.query(GrowingSeason).all()
+    user_org_ids = get_user_organisation_ids(user, db)
+    seasons = db.query(GrowingSeason).filter(GrowingSeason.organisation_id.in_(user_org_ids)).all()
     return [
         SeasonResponse(
             id=s.id,
@@ -138,10 +139,15 @@ def list_seasons(user: User = Depends(get_current_active_user), db: Session = De
 
 @router.post("/seasons", response_model=SeasonResponse)
 def create_season(req: SeasonCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+
     start_dt = datetime.fromisoformat(req.start_date) if req.start_date else datetime.now(timezone.utc)
     end_dt = datetime.fromisoformat(req.end_date) if req.end_date else None
     season = GrowingSeason(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=farm.organisation_id,
         farm_id=req.farm_id,
         name=req.name,
         start_date=start_dt,
@@ -162,7 +168,8 @@ def create_season(req: SeasonCreateRequest, user: User = Depends(get_current_act
 
 @router.get("/field-crops", response_model=List[FieldCropResponse])
 def list_field_crops(field_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(FieldCrop)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(FieldCrop).filter(FieldCrop.organisation_id.in_(user_org_ids))
     if field_id:
         query = query.filter(FieldCrop.field_id == field_id)
     records = query.all()
@@ -183,9 +190,14 @@ def list_field_crops(field_id: Optional[str] = None, user: User = Depends(get_cu
 
 @router.post("/field-crops", response_model=FieldCropResponse)
 def assign_field_crop(req: FieldCropCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    field = db.query(Field).filter(Field.id == req.field_id, Field.organisation_id.in_(user_org_ids)).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found or unauthorized")
+
     plant_dt = datetime.fromisoformat(req.planting_date) if req.planting_date else datetime.now(timezone.utc)
     fc = FieldCrop(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=field.organisation_id,
         field_id=req.field_id,
         crop_id=req.crop_id,
         variety_id=req.variety_id,
