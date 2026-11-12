@@ -11,6 +11,9 @@ def test_tc_sync_001_offline_push_and_idempotency():
     fields = client.get("/api/v1/fields").json()
     field_id = fields[0]["id"]
 
+    tasks = client.get("/api/v1/tasks").json()
+    task_id = tasks[0]["id"] if tasks else "e0000000-0000-0000-0000-000000000001"
+
     client_uuid = f"m-client-{uuid.uuid4().hex[:8]}"
     op_id1 = str(uuid.uuid4())
     op_id2 = str(uuid.uuid4())
@@ -26,7 +29,7 @@ def test_tc_sync_001_offline_push_and_idempotency():
                 "operation_id": op_id1,
                 "operation_type": "update",
                 "entity_name": "task",
-                "entity_id": "e0000000-0000-0000-0000-000000000001",
+                "entity_id": task_id,
                 "client_timestamp": now_iso,
                 "payload": {
                     "status": "in_progress"

@@ -20,8 +20,9 @@ def refresh_online_devices():
             dev.last_heartbeat_at = now
             if isinstance(dev.config, dict):
                 dev.config.pop("last_telemetry_sequence", None)
-                dev.config.pop("device_token", None)
                 dev.config.pop("emergency_stop_active", None)
+                dev.config.setdefault("device_token", "tnx_secret_device_token_2026")
+                dev.config["local_interlock_ready"] = True
                 flag_modified(dev, "config")
         db.commit()
     except Exception:
@@ -72,7 +73,11 @@ def auto_authenticate_test_client(admin_auth_token, monkeypatch):
             or url.startswith("/api/v1/auth/verify-email")
             or url.startswith("/docs")
             or url.startswith("/openapi.json")
+            or url.startswith("/api/v1/telemetry")
         )
+
+        if url.startswith("/api/v1/telemetry") and "X-Device-Token" not in headers and not has_auth:
+            headers["X-Device-Token"] = "tnx_secret_device_token_2026"
 
         if not has_auth and not is_public and admin_auth_token:
             headers["Authorization"] = f"Bearer {admin_auth_token}"

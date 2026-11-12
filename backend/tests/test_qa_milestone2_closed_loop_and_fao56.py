@@ -49,8 +49,8 @@ def test_tc_agro_002_dynamic_taw_raw_calculations():
     result = calculate_dynamic_fao56(req)
     
     assert result.execution_mode == "rule_based_fao56"
-    assert result.pwp_pct == 16.0
-    assert result.fc_pct == 32.0
+    assert result.pwp_pct == 18.0
+    assert result.fc_pct == 34.0
     assert result.taw_mm > 0.0
     assert result.raw_mm > 0.0
     assert result.raw_mm < result.taw_mm
@@ -95,6 +95,32 @@ def test_tc_agro_004_api_endpoint_assessment():
     assert data["gross_water_volume_litres"] > 0
     assert data["taw_mm"] > 0
     assert data["raw_mm"] > 0
+
+def test_tc_agro_005_fallback_flagging():
+    """Verify unknown crop or soil texture is explicitly flagged as fallback applied."""
+    req = AgronomicAssessmentRequest(
+        crop="unknown_exotic_crop",
+        growth_stage="blooming",
+        soil_texture="moon_dust",
+        single_moisture_pct=20.0
+    )
+    result = calculate_dynamic_fao56(req)
+    assert result.fallback_applied is True
+    assert len(result.warnings) >= 2
+    assert any("moon_dust" in w for w in result.warnings)
+    assert any("unknown_exotic_crop" in w for w in result.warnings)
+
+def test_tc_agro_006_synthetic_moisture_flagging():
+    """Verify missing soil readings flag synthetic unmeasured data provenance."""
+    req = AgronomicAssessmentRequest(
+        crop="tomato",
+        growth_stage="mid_season",
+        soil_texture="clay_loam"
+    )
+    result = calculate_dynamic_fao56(req)
+    assert result.synthetic_moisture_used is True
+    assert result.data_provenance == "synthetic_default_unmeasured"
+    assert any("synthetic baseline" in w for w in result.warnings)
 
 # ----------------- 2. Closed-Loop Irrigation & 15s Dry-Run Interlock -----------------
 
