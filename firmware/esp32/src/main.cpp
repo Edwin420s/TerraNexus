@@ -34,6 +34,7 @@ unsigned long sequenceCounter = 0;
 unsigned long lastCommandSequence = 0;
 
 // Closed-Loop Flow & Dry-Run Safety State
+char currentActiveCommandId[64] = "";
 volatile unsigned long flowPulseCount = 0;
 bool closedLoopActive = false;
 float targetVolumeLitres = 0.0f;
@@ -69,11 +70,13 @@ void loadProvisioningConfig() {
                 if (pDoc["farm_id"].is<const char*>()) {
                     strncpy(farmId, pDoc["farm_id"].as<const char*>(), sizeof(farmId) - 1);
                 }
-                if (pDoc["mqtt_user"].is<const char*>()) {
-                    strncpy(mqttUser, pDoc["mqtt_user"].as<const char*>(), sizeof(mqttUser) - 1);
+                const char* userVal = pDoc["mqtt_username"] | pDoc["mqtt_user"] | nullptr;
+                if (userVal) {
+                    strncpy(mqttUser, userVal, sizeof(mqttUser) - 1);
                 }
-                if (pDoc["mqtt_pass"].is<const char*>()) {
-                    strncpy(mqttPass, pDoc["mqtt_pass"].as<const char*>(), sizeof(mqttPass) - 1);
+                const char* passVal = pDoc["mqtt_password"] | pDoc["mqtt_pass"] | nullptr;
+                if (passVal) {
+                    strncpy(mqttPass, passVal, sizeof(mqttPass) - 1);
                 }
             }
             file.close();
@@ -186,6 +189,7 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (maxDurationSec > MAX_CONTINUOUS_RUN_SEC) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
         if (maxDurationSec <= 0) maxDurationSec = MAX_CONTINUOUS_RUN_SEC;
 
+        strncpy(currentActiveCommandId, commandId, sizeof(currentActiveCommandId) - 1);
         commandDurationMillis = (unsigned long)maxDurationSec * 1000UL;
         targetVolumeLitres = targetLitres;
         deliveredVolumeLitres = 0.0f;
@@ -217,6 +221,7 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
             return;
         }
 
+        strncpy(currentActiveCommandId, commandId, sizeof(currentActiveCommandId) - 1);
         commandDurationMillis = (unsigned long)durationSec * 1000UL;
 
         // Engage relays safely: open valve first, then start pump
@@ -248,6 +253,50 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
     }
 }
 
+void sendHeartbeat() {
+    if (!mqttClient.connected()) return;
+    JsonDocument doc;
+    doc["device_id"] = deviceUID;
+    doc["status"] = "online";
+    doc["timestamp"] = millis();
+    doc["emergency_stop"] = emergencyStopActive;
+    doc["pump_running"] = pumpIsActive;
+    doc["dry_run_fault"] = dryRunFaultActive;
+    doc["battery_voltage"] = readBatteryVoltage();
+    doc["local_interlock_ready"] = !emergencyStopActive && !dryRunFaultActive;
+
+    char buffer[256];
+    serializeJson(doc, buffer);
+    mqttClient.publish(topicHeartbeat, buffer);
+}
+
+void replaySpoolQueue() {
+    if (!SPIFFS.exists("/telemetry_spool.jsonl")) return;
+    File file = SPIFFS.open("/telemetry_spool.jsonl", "r");
+    if (!file) return;
+
+    bool allSent = true;
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0) {
+            if (mqttClient.connected()) {
+                if (!mqttClient.publish(topicTelemetry, line.c_str())) {
+                    allSent = false;
+                    break;
+                }
+            } else {
+                allSent = false;
+                break;
+            }
+        }
+    }
+    file.close();
+    if (allSent) {
+        SPIFFS.remove("/telemetry_spool.jsonl");
+    }
+}
+
 void reconnectMqtt() {
     if (!mqttClient.connected()) {
         bool connected = false;
@@ -259,6 +308,8 @@ void reconnectMqtt() {
         if (connected) {
             mqttClient.subscribe(topicCommands);
             digitalWrite(PIN_STATUS_LED, HIGH);
+            replaySpoolQueue();
+            sendHeartbeat();
         } else {
             digitalWrite(PIN_STATUS_LED, LOW);
         }
@@ -281,6 +332,7 @@ void sendTelemetry() {
     doc["battery"] = batt;
     doc["pump_running"] = pumpIsActive;
     doc["emergency_stop"] = emergencyStopActive;
+    doc["dry_run_fault"] = dryRunFaultActive;
 
     JsonArray measurements = doc["measurements"].to<JsonArray>();
 
@@ -394,7 +446,8 @@ void loop() {
                 closedLoopActive = false;
                 dryRunFaultActive = true;
                 lastPumpStopTime = now;
-                publishCommandAck("dry_run_cutoff", "failed", "PUMP_DRY_RUN_DETECTED_NO_FLOW");
+                const char* ackCmd = strlen(currentActiveCommandId) > 0 ? currentActiveCommandId : "dry_run_cutoff";
+                publishCommandAck(ackCmd, "failed", "PUMP_DRY_RUN_DETECTED_NO_FLOW");
             }
         }
 
@@ -407,7 +460,8 @@ void loop() {
                 pumpIsActive = false;
                 closedLoopActive = false;
                 lastPumpStopTime = now;
-                publishCommandAck("closed_loop_target", "completed", "TARGET_VOLUME_DELIVERED");
+                const char* ackCmd = strlen(currentActiveCommandId) > 0 ? currentActiveCommandId : "closed_loop_target";
+                publishCommandAck(ackCmd, "completed", "TARGET_VOLUME_DELIVERED");
             }
         }
     }
@@ -432,11 +486,19 @@ void loop() {
         } else {
             mqttClient.loop();
         }
+    } else {
+        WiFi.reconnect();
     }
 
     // 3. Periodic Telemetry
     if (now - lastTelemetryMillis >= TELEMETRY_INTERVAL_MS) {
         lastTelemetryMillis = now;
         sendTelemetry();
+    }
+
+    // 4. Periodic Heartbeat
+    if (now - lastHeartbeatMillis >= HEARTBEAT_INTERVAL_MS) {
+        lastHeartbeatMillis = now;
+        sendHeartbeat();
     }
 }
