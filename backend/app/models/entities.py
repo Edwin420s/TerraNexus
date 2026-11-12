@@ -311,7 +311,7 @@ class Pump(Base):
     power_source = Column(String(50), default="solar", nullable=False)
     control_device_id = Column(String(36), ForeignKey("devices.id"), nullable=True)
     is_running = Column(Boolean, default=False, nullable=False)
-    max_continuous_runtime_sec = Column(Integer, default=3600, nullable=False)
+    max_continuous_runtime_sec = Column(Integer, default=1800, nullable=False)
     minimum_cooloff_sec = Column(Integer, default=300, nullable=False)
     last_started_at = Column(DateTime(timezone=True), nullable=True)
     last_stopped_at = Column(DateTime(timezone=True), nullable=True)

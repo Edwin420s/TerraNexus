@@ -168,7 +168,7 @@ def init_database():
                 max_flow_rate_lpm=150.0,
                 power_source="solar",
                 is_running=False,
-                max_continuous_runtime_sec=3600
+                max_continuous_runtime_sec=1800
             )
             db.add(pump)
             db.flush()
@@ -192,6 +192,7 @@ def init_database():
             db.flush()
 
             # 7. Device & Sensors
+            now_time = datetime.now(timezone.utc)
             dev = Device(
                 id="f0000000-0000-0000-0000-000000000001",
                 organisation_id=org.id,
@@ -205,7 +206,14 @@ def init_database():
                 provisioning_status="active",
                 connection_status="online",
                 battery_level_pct=94.0,
-                signal_strength_rssi=-68
+                signal_strength_rssi=-68,
+                last_heartbeat_at=now_time,
+                last_telemetry_at=now_time,
+                config={
+                    "device_token": "tnx_dev_seed_token_node_001",
+                    "local_interlock_ready": True,
+                    "last_telemetry_sequence": 0
+                }
             )
             db.add(dev)
             db.flush()
@@ -234,6 +242,7 @@ def init_database():
 
             # 8. Tasks, Equipment, Inventory
             task = Task(
+                id="e0000000-0000-0000-0000-000000000001",
                 organisation_id=org.id,
                 farm_id=farm.id,
                 field_id=f1.id,

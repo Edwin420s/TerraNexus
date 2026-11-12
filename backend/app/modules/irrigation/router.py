@@ -87,7 +87,7 @@ def evaluate_device_preflight(zone: IrrigationZone, db: Session):
     elif zone.pump and zone.pump.control_device_id:
         dev = db.query(Device).filter(Device.id == zone.pump.control_device_id).first()
     else:
-        # Prioritize operational online controller on this farm
+        # Require device assigned to zone or pump controller; fallback to farm controller only if uniquely online
         dev = db.query(Device).filter(
             Device.farm_id == zone.farm_id,
             Device.provisioning_status.in_(("active", "provisioned")),
@@ -101,14 +101,16 @@ def evaluate_device_preflight(zone: IrrigationZone, db: Session):
 
     device_trusted = dev.provisioning_status in ("active", "provisioned")
     
-    # Freshness verification: heartbeat or telemetry must be within 120s window
+    # Freshness verification: positive recent heartbeat or telemetry timestamp is REQUIRED (fail-closed)
     now = datetime.now(timezone.utc)
     last_seen = dev.last_heartbeat_at or dev.last_telemetry_at
     if last_seen and last_seen.tzinfo is None:
         last_seen = last_seen.replace(tzinfo=timezone.utc)
 
     device_online = dev.connection_status == "online"
-    if device_online and last_seen:
+    if not last_seen:
+        device_online = False
+    else:
         age_seconds = (now - last_seen).total_seconds()
         if age_seconds > 120:
             device_online = False
@@ -116,7 +118,8 @@ def evaluate_device_preflight(zone: IrrigationZone, db: Session):
     cfg = dev.config if isinstance(dev.config, dict) else {}
     emergency_stop_active = bool(cfg.get("emergency_stop_active", cfg.get("emergency_stop", False)))
     dry_run_fault = bool(cfg.get("dry_run_fault", False))
-    local_interlock_ready = bool(cfg.get("local_interlock_ready", True)) and not emergency_stop_active and not dry_run_fault and device_online
+    # Local interlock requires positive evidence from device; default is FALSE (fail-closed)
+    local_interlock_ready = bool(cfg.get("local_interlock_ready", False)) and not emergency_stop_active and not dry_run_fault and device_online
 
     return dev, device_trusted, device_online, local_interlock_ready, emergency_stop_active, dry_run_fault
 
@@ -262,7 +265,7 @@ def start_irrigation(req: IrrigationStartRequest, user: User = Depends(get_curre
     if dry_run_fault:
         pump_fault = True
 
-    max_runtime = zone.pump.max_continuous_runtime_sec if (zone.pump and zone.pump.max_continuous_runtime_sec) else 3600
+    max_runtime = min(1800, zone.pump.max_continuous_runtime_sec if (zone.pump and zone.pump.max_continuous_runtime_sec) else 1800)
 
     ctx = ActuationContext(
         actor_authorized=actor_authorized,
@@ -396,7 +399,10 @@ def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current
         db.add(cmd)
         db.commit()
         from app.services.mqtt_publisher import publish_device_command
-        publish_device_command(dev, cmd)
+        published = publish_device_command(dev, cmd)
+        if not published:
+            event.abort_reason = f"STOP_DISPATCH_WARNING: MQTT unavailable. {req.reason or 'operator_stop'}"
+            db.commit()
 
     return IrrigationEventResponse(
         id=event.id,
@@ -639,6 +645,14 @@ def record_closed_loop_feedback(
     event = db.query(IrrigationEvent).filter(IrrigationEvent.id == req.event_id, IrrigationEvent.organisation_id.in_(user_org_ids)).first()
     if not event:
         raise HTTPException(status_code=404, detail="Irrigation event not found or unauthorized")
+
+    # Physical feedback parameter validation
+    if req.current_flow_rate_lpm < 0 or req.current_flow_rate_lpm > 2000.0 or req.delivered_volume_litres < 0:
+        raise HTTPException(status_code=400, detail="Plausibility check failed: flow rate or volume out of physical sensor bounds")
+
+    # Authorization verification: operator role required
+    if not check_user_can_actuate(user, event.organisation_id, db):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Actuation feedback requires operator, manager, admin, or owner role")
 
     zone = event.zone
     now = datetime.now(timezone.utc)
