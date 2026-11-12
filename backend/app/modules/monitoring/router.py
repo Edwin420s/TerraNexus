@@ -4,8 +4,8 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
-from app.models.entities import User, Alert, AlertRule, Notification
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
+from app.models.entities import User, Alert, AlertRule, Notification, Farm
 
 router = APIRouter(prefix="", tags=["monitoring"])
 
@@ -51,7 +51,8 @@ class NotificationResponse(BaseModel):
 
 @router.get("/alerts", response_model=List[AlertResponse])
 def list_alerts(status: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(Alert)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Alert).filter(Alert.organisation_id.in_(user_org_ids))
     if status:
         query = query.filter(Alert.status == status)
     alerts = query.order_by(Alert.triggered_at.desc()).all()
@@ -90,9 +91,12 @@ def list_alerts(status: Optional[str] = None, user: User = Depends(get_current_a
 
 @router.post("/alerts/{alert_id}/ack")
 def acknowledge_alert(alert_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         return {"status": "ok", "message": "Demo alert acknowledged"}
+    if alert.organisation_id not in user_org_ids:
+        raise HTTPException(status_code=403, detail="Unauthorized to acknowledge alert from another organisation")
     alert.status = "acknowledged"
     alert.acknowledged_at = datetime.now(timezone.utc)
     alert.acknowledged_by = user.id
@@ -101,9 +105,12 @@ def acknowledge_alert(alert_id: str, user: User = Depends(get_current_active_use
 
 @router.post("/alerts/{alert_id}/resolve")
 def resolve_alert(alert_id: str, notes: Optional[str] = "Resolved by operator", user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         return {"status": "ok", "message": "Demo alert resolved"}
+    if alert.organisation_id not in user_org_ids:
+        raise HTTPException(status_code=403, detail="Unauthorized to resolve alert from another organisation")
     alert.status = "resolved"
     alert.resolved_at = datetime.now(timezone.utc)
     alert.resolved_by = user.id
@@ -113,7 +120,8 @@ def resolve_alert(alert_id: str, notes: Optional[str] = "Resolved by operator", 
 
 @router.get("/alert-rules", response_model=List[AlertRuleResponse])
 def list_alert_rules(user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    rules = db.query(AlertRule).all()
+    user_org_ids = get_user_organisation_ids(user, db)
+    rules = db.query(AlertRule).filter(AlertRule.organisation_id.in_(user_org_ids)).all()
     return [
         AlertRuleResponse(
             id=r.id,
@@ -129,8 +137,13 @@ def list_alert_rules(user: User = Depends(get_current_active_user), db: Session 
 
 @router.post("/alert-rules", response_model=AlertRuleResponse)
 def create_alert_rule(req: AlertRuleCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+
     rule = AlertRule(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=farm.organisation_id,
         farm_id=req.farm_id,
         field_id=req.field_id,
         name=req.name,
