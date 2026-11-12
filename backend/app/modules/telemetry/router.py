@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Header, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.auth import get_current_active_user, get_user_organisation_ids
+from app.core.security import decode_access_token
+from sqlalchemy.orm.attributes import flag_modified
 from app.models.entities import User, Device, Sensor, Measurement, AuditLog
 from app.modules.telemetry.schemas import TelemetryEnvelope, TelemetryAccepted
 
@@ -64,10 +66,35 @@ async def ingest_telemetry(
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
-    """Durable ingestion, device authentication, and quality evaluation for canonical telemetry packets."""
-    event_id_str = str(payload.event_id) if payload.event_id else None
+    """Durable ingestion, strict device authentication, sequence monotonic validation, and quality evaluation."""
+    dev_id_str = str(payload.device_id)
+    device = db.query(Device).filter((Device.id == dev_id_str) | (Device.device_uid == dev_id_str)).first()
+    
+    # 1. Device lookup & Authentication MUST happen BEFORE deduplication or audit logging
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown or unprovisioned device"
+        )
+    if device.provisioning_status not in ("active", "provisioned"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Device is inactive or revoked"
+        )
 
-    # Deduplicate incoming telemetry on event_id
+    cfg = dict(device.config) if isinstance(device.config, dict) else {}
+    expected_token = cfg.get("device_token")
+    raw_bearer = authorization[7:] if authorization and authorization.startswith("Bearer ") else authorization
+    provided_token = x_device_token or raw_bearer
+
+    if not expected_token or provided_token != expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing device authentication token"
+        )
+
+    # 2. Deduplication on event_id for authenticated device
+    event_id_str = str(payload.event_id) if payload.event_id else None
     if event_id_str:
         existing_log = db.query(AuditLog).filter(
             AuditLog.action == "telemetry_ingest",
@@ -81,32 +108,7 @@ async def ingest_telemetry(
                 received_at=existing_log.created_at
             )
 
-    dev_id_str = str(payload.device_id)
-    device = db.query(Device).filter((Device.id == dev_id_str) | (Device.device_uid == dev_id_str)).first()
-    
-    if not device:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unknown or unprovisioned device"
-        )
-    if device.provisioning_status not in ("active", "provisioned"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Device is inactive or revoked"
-        )
-
-    # Verifiable Device Authentication
-    cfg = dict(device.config) if isinstance(device.config, dict) else {}
-    expected_token = cfg.get("device_token")
-    if expected_token:
-        provided_token = x_device_token or (authorization[7:] if authorization and authorization.startswith("Bearer ") else authorization)
-        if not provided_token or provided_token != expected_token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or missing device authentication token"
-            )
-
-    # Sequence validation & Anti-Replay
+    # 3. Sequence validation & Anti-Replay (must be strictly monotonic when sequence > 0)
     if payload.sequence is not None and payload.sequence > 0:
         last_seq = cfg.get("last_telemetry_sequence", -1)
         if payload.sequence <= last_seq:
@@ -115,6 +117,8 @@ async def ingest_telemetry(
                 detail=f"Replay detected: telemetry sequence {payload.sequence} <= last sequence {last_seq}"
             )
         cfg["last_telemetry_sequence"] = payload.sequence
+        device.config = cfg
+        flag_modified(device, "config")
 
     org_id = device.organisation_id
     farm_id = device.farm_id
@@ -162,7 +166,6 @@ async def ingest_telemetry(
 
     now_utc = datetime.now(timezone.utc)
     device.last_telemetry_at = now_utc
-    device.last_heartbeat_at = now_utc
     device.connection_status = "online"
     device.config = cfg
 
@@ -174,6 +177,40 @@ async def ingest_telemetry(
         status="persisted_and_processed",
         received_at=datetime.now(timezone.utc)
     )
+
+class HeartbeatRequest(BaseModel):
+    device_id: str
+    status: Optional[str] = "online"
+    battery_level_pct: Optional[float] = None
+    firmware_version: Optional[str] = None
+
+@router.post("/telemetry/heartbeat")
+def ingest_heartbeat(
+    req: HeartbeatRequest,
+    x_device_token: Optional[str] = Header(None, alias="X-Device-Token"),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """Dedicated authenticated device heartbeat endpoint."""
+    device = db.query(Device).filter((Device.id == req.device_id) | (Device.device_uid == req.device_id)).first()
+    if not device:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown device")
+    
+    cfg = dict(device.config) if isinstance(device.config, dict) else {}
+    expected_token = cfg.get("device_token")
+    raw_bearer = authorization[7:] if authorization and authorization.startswith("Bearer ") else authorization
+    provided_token = x_device_token or raw_bearer
+
+    if not expected_token or provided_token != expected_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device credentials")
+
+    now = datetime.now(timezone.utc)
+    device.last_heartbeat_at = now
+    device.connection_status = "online"
+    if req.battery_level_pct is not None:
+        device.battery_level_pct = req.battery_level_pct
+    db.commit()
+    return {"status": "heartbeat_acknowledged", "device_id": device.id, "last_heartbeat_at": now.isoformat()}
 
 @router.post("/telemetry/batch", response_model=List[TelemetryAccepted], status_code=status.HTTP_202_ACCEPTED)
 async def ingest_telemetry_batch(
