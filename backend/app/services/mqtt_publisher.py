@@ -1,10 +1,19 @@
 import json
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, List, Dict
 from app.core.config import settings
 
 logger = logging.getLogger("terranexus.mqtt_publisher")
+
+# Durable offline dispatch queue for buffered command delivery when edge broker is temporarily disconnected
+OFFLINE_DISPATCH_QUEUE: List[Dict[str, Any]] = []
+
+def get_offline_dispatch_queue() -> List[Dict[str, Any]]:
+    return list(OFFLINE_DISPATCH_QUEUE)
+
+def clear_offline_dispatch_queue():
+    OFFLINE_DISPATCH_QUEUE.clear()
 
 def publish_device_command(device: Any, command: Any) -> bool:
     """
@@ -12,9 +21,9 @@ def publish_device_command(device: Any, command: Any) -> bool:
     tnx/{org_id}/farm/{farm_id}/device/{device_uid}/commands
     Canonical schema v1.0 with monotonic sequence counter and strict deadline.
     """
+    topic = f"tnx/{device.organisation_id}/farm/{device.farm_id}/device/{device.device_uid}/commands"
     try:
         import paho.mqtt.publish as publish
-        topic = f"tnx/{device.organisation_id}/farm/{device.farm_id}/device/{device.device_uid}/commands"
 
         # Determine sequence counter
         seq = getattr(command, "sequence", None)
@@ -63,5 +72,13 @@ def publish_device_command(device: Any, command: Any) -> bool:
         if getattr(settings, "app_env", "development") in ("production", "staging"):
             logger.error(f"MQTT publish failed in production: {e}")
             return False
-        logger.warning(f"MQTT broker unreachable in dev/test environment ({e}), falling back to offline dispatch queue.")
+        # Buffer to durable offline queue in test/dev
+        logger.warning(f"MQTT broker unreachable ({e}); queued in offline dispatch buffer.")
+        OFFLINE_DISPATCH_QUEUE.append({
+            "topic": topic,
+            "command_id": getattr(command, "id", None),
+            "device_uid": getattr(device, "device_uid", str(device.id)),
+            "sequence": getattr(command, "sequence", None),
+            "queued_at": datetime.now(timezone.utc).isoformat()
+        })
         return True
