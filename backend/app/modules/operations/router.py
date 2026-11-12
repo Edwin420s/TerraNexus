@@ -4,8 +4,8 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user
-from app.models.entities import User, Task, Equipment, InventoryItem, HarvestRecord
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
+from app.models.entities import User, Task, Equipment, InventoryItem, HarvestRecord, Farm
 
 router = APIRouter(prefix="", tags=["operations"])
 
@@ -88,7 +88,8 @@ class HarvestCreateRequest(BaseModel):
 
 @router.get("/tasks", response_model=List[TaskResponse])
 def list_tasks(farm_id: Optional[str] = None, status: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(Task)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Task).filter(Task.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(Task.farm_id == farm_id)
     if status:
@@ -110,9 +111,14 @@ def list_tasks(farm_id: Optional[str] = None, status: Optional[str] = None, user
 
 @router.post("/tasks", response_model=TaskResponse)
 def create_task(req: TaskCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+
     due_dt = datetime.fromisoformat(req.due_date) if req.due_date else None
     task = Task(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=farm.organisation_id,
         farm_id=req.farm_id,
         field_id=req.field_id,
         title=req.title,
@@ -141,9 +147,10 @@ def create_task(req: TaskCreateRequest, user: User = Depends(get_current_active_
 
 @router.patch("/tasks/{task_id}", response_model=TaskResponse)
 def update_task(task_id: str, req: TaskUpdateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    task = db.query(Task).filter(Task.id == task_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    task = db.query(Task).filter(Task.id == task_id, Task.organisation_id.in_(user_org_ids)).first()
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="Task not found or unauthorized")
     if req.status:
         task.status = req.status
         if req.status == "completed":
@@ -168,7 +175,8 @@ def update_task(task_id: str, req: TaskUpdateRequest, user: User = Depends(get_c
 
 @router.get("/equipment", response_model=List[EquipmentResponse])
 def list_equipment(farm_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(Equipment)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Equipment).filter(Equipment.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(Equipment.farm_id == farm_id)
     items = query.all()
@@ -185,8 +193,13 @@ def list_equipment(farm_id: Optional[str] = None, user: User = Depends(get_curre
 
 @router.post("/equipment", response_model=EquipmentResponse)
 def create_equipment(req: EquipmentCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+
     equip = Equipment(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=farm.organisation_id,
         farm_id=req.farm_id,
         name=req.name,
         equipment_type=req.equipment_type,
@@ -207,7 +220,8 @@ def create_equipment(req: EquipmentCreateRequest, user: User = Depends(get_curre
 
 @router.get("/inventory", response_model=List[InventoryResponse])
 def list_inventory(farm_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(InventoryItem)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(InventoryItem).filter(InventoryItem.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(InventoryItem.farm_id == farm_id)
     items = query.all()
@@ -226,8 +240,13 @@ def list_inventory(farm_id: Optional[str] = None, user: User = Depends(get_curre
 
 @router.post("/inventory", response_model=InventoryResponse)
 def create_inventory(req: InventoryCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+
     item = InventoryItem(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=farm.organisation_id,
         farm_id=req.farm_id,
         item_name=req.item_name,
         category=req.category,
@@ -252,7 +271,8 @@ def create_inventory(req: InventoryCreateRequest, user: User = Depends(get_curre
 
 @router.get("/harvest", response_model=List[HarvestResponse])
 def list_harvests(farm_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(HarvestRecord)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(HarvestRecord).filter(HarvestRecord.organisation_id.in_(user_org_ids))
     if farm_id:
         query = query.filter(HarvestRecord.farm_id == farm_id)
     harvests = query.order_by(HarvestRecord.harvest_date.desc()).all()
@@ -270,9 +290,14 @@ def list_harvests(farm_id: Optional[str] = None, user: User = Depends(get_curren
 
 @router.post("/harvest", response_model=HarvestResponse)
 def create_harvest(req: HarvestCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    user_org_ids = get_user_organisation_ids(user, db)
+    farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+
     h_dt = datetime.fromisoformat(req.harvest_date) if req.harvest_date else datetime.now(timezone.utc)
     harvest = HarvestRecord(
-        organisation_id="a0000000-0000-0000-0000-000000000001",
+        organisation_id=farm.organisation_id,
         farm_id=req.farm_id,
         field_id=req.field_id,
         harvest_date=h_dt,
@@ -324,6 +349,7 @@ class PilotMetricComparison(BaseModel):
     production_cost_per_kg_treatment: float
     production_cost_per_kg_control: float
     status: str
+    provenance: Optional[str] = "demonstration_pilot_fixture"
 
 @router.get("/pilot/kirinyaga-tomato/metrics", response_model=PilotMetricComparison)
 @router.get("/operations/pilot/kirinyaga-tomato/metrics", response_model=PilotMetricComparison)
