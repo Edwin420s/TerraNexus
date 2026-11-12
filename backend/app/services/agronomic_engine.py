@@ -59,8 +59,8 @@ SOIL_TEXTURE_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     "clay_loam": {
         "name": "Clay Loam",
-        "fc_pct": 32.0,
-        "pwp_pct": 16.0,
+        "fc_pct": 34.0,
+        "pwp_pct": 18.0,
         "sat_pct": 50.0,
         "bulk_density_g_cm3": 1.30,
         "infiltration_rate_mm_hr": 8.0
@@ -80,7 +80,7 @@ CROP_PHENOLOGY_PROFILES: Dict[str, Dict[str, Any]] = {
     "tomato": {
         "name": "Tomato (Solanum lycopersicum)",
         "stages": {
-            "initial": {"duration_days": 25, "kc": 0.60, "root_depth_m": 0.25, "p_mad": 0.40},
+            "initial": {"duration_days": 25, "kc": 0.45, "root_depth_m": 0.25, "p_mad": 0.40},
             "development": {"duration_days": 35, "kc": 0.85, "root_depth_m": 0.45, "p_mad": 0.40},
             "mid_season": {"duration_days": 40, "kc": 1.15, "root_depth_m": 0.65, "p_mad": 0.40},
             "late_season": {"duration_days": 25, "kc": 0.80, "root_depth_m": 0.65, "p_mad": 0.50}
@@ -137,7 +137,7 @@ class AgronomicAssessmentRequest(BaseModel):
     growth_stage: str = "mid_season"
     soil_texture: str = "clay_loam"
     soil_readings: Optional[List[SoilSensorDepthReading]] = None
-    single_moisture_pct: Optional[float] = 16.2
+    single_moisture_pct: Optional[float] = None
     et0_mm_day: Optional[float] = 4.5
     field_area_m2: Optional[float] = 1000.0  # 0.1 hectare default
     irrigation_efficiency: Optional[float] = 0.90  # Drip irrigation efficiency
@@ -163,19 +163,44 @@ class AgronomicAssessmentResult(BaseModel):
     recommended_duration_minutes: int
     explainable_reasoning: str
     execution_mode: str = "rule_based_fao56"
+    fallback_applied: bool = False
+    synthetic_moisture_used: bool = False
+    data_provenance: str = "field_sensor"
+    warnings: List[str] = Field(default_factory=list)
 
 def calculate_dynamic_fao56(req: AgronomicAssessmentRequest) -> AgronomicAssessmentResult:
     """
     Executes complete deterministic FAO-56 soil-water continuum calculation.
     """
+    warnings: List[str] = []
+    fallback_applied = False
+    synthetic_moisture_used = False
+
     # 1. Resolve soil profile
     soil_key = req.soil_texture.lower().replace(" ", "_")
-    soil = SOIL_TEXTURE_PROFILES.get(soil_key, SOIL_TEXTURE_PROFILES["clay_loam"])
+    if soil_key not in SOIL_TEXTURE_PROFILES:
+        warnings.append(f"Unrecognized soil texture '{req.soil_texture}'; defaulting to 'clay_loam'.")
+        fallback_applied = True
+        soil = SOIL_TEXTURE_PROFILES["clay_loam"]
+    else:
+        soil = SOIL_TEXTURE_PROFILES[soil_key]
     
     # 2. Resolve crop phenology
     crop_key = req.crop.lower()
-    crop_profile = CROP_PHENOLOGY_PROFILES.get(crop_key, CROP_PHENOLOGY_PROFILES["tomato"])
-    stage_info = crop_profile["stages"].get(req.growth_stage.lower(), crop_profile["stages"]["mid_season"])
+    if crop_key not in CROP_PHENOLOGY_PROFILES:
+        warnings.append(f"Unrecognized crop '{req.crop}'; defaulting to 'tomato'.")
+        fallback_applied = True
+        crop_profile = CROP_PHENOLOGY_PROFILES["tomato"]
+    else:
+        crop_profile = CROP_PHENOLOGY_PROFILES[crop_key]
+
+    stage_key = req.growth_stage.lower()
+    if stage_key not in crop_profile["stages"]:
+        warnings.append(f"Unrecognized growth stage '{req.growth_stage}' for crop '{crop_profile['name']}'; defaulting to 'mid_season'.")
+        fallback_applied = True
+        stage_info = crop_profile["stages"]["mid_season"]
+    else:
+        stage_info = crop_profile["stages"][stage_key]
     
     root_depth_m = stage_info["root_depth_m"]
     kc = stage_info["kc"]
@@ -199,14 +224,11 @@ def calculate_dynamic_fao56(req: AgronomicAssessmentRequest) -> AgronomicAssessm
     
     # 6. Current Root Zone Depletion (Dr) — Multi-Depth Soil Layer Integration (FAO-56 Chapter 8)
     if req.soil_readings and len(req.soil_readings) >= 2:
+        data_provenance = "multi_depth_sensor_profile"
         # Sort depth readings ascending
         sorted_readings = sorted(req.soil_readings, key=lambda r: r.depth_cm)
         total_depth_m = root_depth_m
 
-        # Compute layer boundaries between probe depths
-        # E.g. probes at 10cm and 30cm in a 0.65m root zone:
-        # Layer 1: 0 to 20cm (thickness 0.20m)
-        # Layer 2: 20cm to 65cm (thickness 0.45m)
         layers_depl_mm = 0.0
         weighted_moisture_num = 0.0
         total_layer_thickness = 0.0
@@ -245,13 +267,24 @@ def calculate_dynamic_fao56(req: AgronomicAssessmentRequest) -> AgronomicAssessm
         current_depletion_mm = round(layers_depl_mm, 2)
         depletion_fraction = max(0.0, min(1.0, current_depletion_mm / max(0.01, taw_mm)))
     elif req.soil_readings and len(req.soil_readings) == 1:
+        data_provenance = "single_depth_sensor"
         weighted_moisture = req.soil_readings[0].moisture_pct
         current_moisture_clamped = max(0.0, min(soil["sat_pct"], weighted_moisture))
         available_moisture = max(0.0, current_moisture_clamped - pwp)
         depletion_fraction = max(0.0, min(1.0, 1.0 - (available_moisture / max(0.01, (fc - pwp)))))
         current_depletion_mm = round(depletion_fraction * taw_mm, 2)
+    elif req.single_moisture_pct is not None:
+        data_provenance = "single_depth_sensor"
+        weighted_moisture = req.single_moisture_pct
+        current_moisture_clamped = max(0.0, min(soil["sat_pct"], weighted_moisture))
+        available_moisture = max(0.0, current_moisture_clamped - pwp)
+        depletion_fraction = max(0.0, min(1.0, 1.0 - (available_moisture / max(0.01, (fc - pwp)))))
+        current_depletion_mm = round(depletion_fraction * taw_mm, 2)
     else:
-        weighted_moisture = req.single_moisture_pct if req.single_moisture_pct is not None else 18.0
+        synthetic_moisture_used = True
+        data_provenance = "synthetic_default_unmeasured"
+        warnings.append("No in-situ soil moisture sensor readings provided; utilizing synthetic baseline (18.0%).")
+        weighted_moisture = 18.0
         current_moisture_clamped = max(0.0, min(soil["sat_pct"], weighted_moisture))
         available_moisture = max(0.0, current_moisture_clamped - pwp)
         depletion_fraction = max(0.0, min(1.0, 1.0 - (available_moisture / max(0.01, (fc - pwp)))))
@@ -294,8 +327,10 @@ def calculate_dynamic_fao56(req: AgronomicAssessmentRequest) -> AgronomicAssessm
         f"Hydraulic Boundaries: Total Available Water (TAW) = {taw_mm} mm | Readily Available Water (RAW) = {raw_mm} mm\n"
         f"Observed Root Moisture: {weighted_moisture:.1f}% | Calculated Depletion (Dr) = {current_depletion_mm} mm ({depletion_fraction_pct}% of TAW)\n"
         f"Management Allowed Depletion Threshold: {mad_threshold_pct}% | Stress Coefficient (Ks): {ks}\n"
-        f"Assessment: Status is {status_label}. "
+        f"Data Provenance: {data_provenance} | Assessment: Status is {status_label}. "
     )
+    if warnings:
+        reasoning_text += f"\n[Provenance Warnings]: {'; '.join(warnings)} "
     if deficit_triggered:
         reasoning_text += (
             f"Root water deficit has exceeded allowable buffer. "
@@ -327,5 +362,9 @@ def calculate_dynamic_fao56(req: AgronomicAssessmentRequest) -> AgronomicAssessm
         gross_water_volume_litres=gross_volume_litres,
         recommended_duration_minutes=duration_minutes,
         explainable_reasoning=reasoning_text,
-        execution_mode="rule_based_fao56"
+        execution_mode="rule_based_fao56",
+        fallback_applied=fallback_applied,
+        synthetic_moisture_used=synthetic_moisture_used,
+        data_provenance=data_provenance,
+        warnings=warnings
     )
