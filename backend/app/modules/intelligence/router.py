@@ -56,7 +56,8 @@ class LocalReasoningResponse(BaseModel):
 
 @router.get("/recommendations", response_model=List[RecommendationResponse])
 def list_recommendations(field_id: Optional[str] = None, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    query = db.query(Recommendation)
+    user_org_ids = get_user_organisation_ids(user, db)
+    query = db.query(Recommendation).filter(Recommendation.organisation_id.in_(user_org_ids))
     if field_id:
         query = query.filter(Recommendation.field_id == field_id)
     recs = query.order_by(Recommendation.created_at.desc()).all()
@@ -91,9 +92,10 @@ def list_recommendations(field_id: Optional[str] = None, user: User = Depends(ge
 
 @router.get("/recommendations/{rec_id}", response_model=RecommendationResponse)
 def get_recommendation(rec_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    r = db.query(Recommendation).filter(Recommendation.id == rec_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    r = db.query(Recommendation).filter(Recommendation.id == rec_id, Recommendation.organisation_id.in_(user_org_ids)).first()
     if not r:
-        raise HTTPException(status_code=404, detail="Recommendation not found")
+        raise HTTPException(status_code=404, detail="Recommendation not found or unauthorized")
     ev_list = [
         EvidenceResponse(
             evidence_type=e.evidence_type,
@@ -121,18 +123,20 @@ def get_recommendation(rec_id: str, user: User = Depends(get_current_active_user
 
 @router.post("/recommendations/{rec_id}/accept")
 def accept_recommendation(rec_id: str, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    r = db.query(Recommendation).filter(Recommendation.id == rec_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    r = db.query(Recommendation).filter(Recommendation.id == rec_id, Recommendation.organisation_id.in_(user_org_ids)).first()
     if not r:
-        raise HTTPException(status_code=404, detail="Recommendation not found")
+        raise HTTPException(status_code=404, detail="Recommendation not found or unauthorized")
     r.status = "accepted"
     db.commit()
     return {"status": "ok", "recommendation_id": r.id, "new_status": "accepted"}
 
 @router.post("/recommendations/{rec_id}/reject")
 def reject_recommendation(rec_id: str, reason: Optional[str] = "User rejected", user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
-    r = db.query(Recommendation).filter(Recommendation.id == rec_id).first()
+    user_org_ids = get_user_organisation_ids(user, db)
+    r = db.query(Recommendation).filter(Recommendation.id == rec_id, Recommendation.organisation_id.in_(user_org_ids)).first()
     if not r:
-        raise HTTPException(status_code=404, detail="Recommendation not found")
+        raise HTTPException(status_code=404, detail="Recommendation not found or unauthorized")
     r.status = "rejected"
     db.commit()
     return {"status": "ok", "recommendation_id": r.id, "new_status": "rejected"}
@@ -475,11 +479,15 @@ def chat_with_documents(
         answer = perform_local_agronomic_inference(augmented_prompt)
         exec_mode = "qvac_local_hardware"
     except Exception:
+        from app.services.qvac_server import perform_rule_based_agronomic_inference
+        rule_eval = perform_rule_based_agronomic_inference(augmented_prompt)
         answer = (
-            f"Based on the retrieved private farm documents and FAO-56 standards: {citations[0].text if citations else ''}. "
-            f"The current field parameters should be maintained within the recommended allowable depletion threshold."
+            f"[Document Reference: {citations[0].source_doc if citations else 'Knowledge Base'}]\n"
+            f"{citations[0].text if citations else ''}\n\n"
+            f"[Deterministic FAO-56 Agronomic Evaluation]\n"
+            f"{rule_eval}"
         )
-        exec_mode = "retrieval_baseline_fallback"
+        exec_mode = "rule_based_fao56"
 
     return ChatDocumentResponse(
         query=req.prompt,
@@ -570,8 +578,9 @@ def voice_assistant(
         reasoning = perform_local_agronomic_inference(transcription)
         exec_mode = "qvac_local_hardware"
     except Exception:
-        reasoning = "Soil moisture is currently optimal. Maintain normal scheduled drip cycles."
-        exec_mode = "simulated_edge_stub"
+        from app.services.qvac_server import perform_rule_based_agronomic_inference
+        reasoning = perform_rule_based_agronomic_inference(transcription)
+        exec_mode = "rule_based_fao56"
 
     tts_res = QVACSpeechEngine.synthesize_speech(reasoning, req.voice or "agronomist_female")
     return VoiceAssistantResponse(
