@@ -30,13 +30,30 @@
 #define SOIL_CALIB_AIR_VALUE    3200  // Sensor in dry air (0% moisture)
 #define SOIL_CALIB_WATER_VALUE  1400  // Sensor in cup of water (100% moisture)
 
-// ----------------- Network & Telemetry Defaults -----------------
-#define DEFAULT_WIFI_SSID       "TerraNexus-Field-WiFi"
-#define DEFAULT_WIFI_PASS       "TerraAgri2026"
-#define DEFAULT_MQTT_SERVER     "192.168.1.100" // Or terranexus cloud host
+// ----------------- Network & Telemetry Defaults (Configurable via Build Flags or NVS) -----------------
+#ifndef DEFAULT_WIFI_SSID
+#define DEFAULT_WIFI_SSID       "" // Set via build flag -DDEFAULT_WIFI_SSID="..." or NVS
+#endif
+
+#ifndef DEFAULT_WIFI_PASS
+#define DEFAULT_WIFI_PASS       "" // Set via build flag -DDEFAULT_WIFI_PASS="..." or NVS
+#endif
+
+#ifndef DEFAULT_MQTT_SERVER
+#define DEFAULT_MQTT_SERVER     "127.0.0.1"
+#endif
+
+#ifndef DEFAULT_MQTT_PORT
 #define DEFAULT_MQTT_PORT       1883
-#define DEFAULT_MQTT_USER       "tnx_field_gateway"
-#define DEFAULT_MQTT_PASS       "tnx_secure_field_pass_2026"
+#endif
+
+#ifndef DEFAULT_MQTT_USER
+#define DEFAULT_MQTT_USER       ""
+#endif
+
+#ifndef DEFAULT_MQTT_PASS
+#define DEFAULT_MQTT_PASS       ""
+#endif
 
 // Provisioned Tenancy Identifiers
 #define DEFAULT_TENANT_ID       "a0000000-0000-0000-0000-000000000001"
