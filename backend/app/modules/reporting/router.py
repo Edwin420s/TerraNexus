@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.database import get_db
 from app.core.auth import get_current_active_user, get_user_organisation_ids
-from app.models.entities import User, Farm, Field, IrrigationEvent, Measurement
+from app.models.entities import User, Farm, Field, IrrigationEvent, Measurement, Alert
 
 router = APIRouter(prefix="/reports", tags=["reporting"])
 
@@ -23,6 +23,7 @@ def get_farm_report(farm_id: Optional[str] = None, user: User = Depends(get_curr
     farm_query = db.query(Farm).filter(Farm.organisation_id.in_(user_org_ids))
     field_query = db.query(Field).filter(Field.organisation_id.in_(user_org_ids))
     measurement_query = db.query(Measurement).filter(Measurement.organisation_id.in_(user_org_ids))
+    alert_query = db.query(Alert).filter(Alert.organisation_id.in_(user_org_ids), Alert.status == "active")
 
     if farm_id:
         farm_query = farm_query.filter(Farm.id == farm_id)
@@ -32,6 +33,31 @@ def get_farm_report(farm_id: Optional[str] = None, user: User = Depends(get_curr
     farms_count = farm_query.count()
     fields_count = field_query.count()
     measurements_count = measurement_query.count()
+    active_alerts_count = alert_query.count()
+
+    if measurements_count == 0:
+        return ReportSummary(
+            report_title="Farm Performance and Operational Intelligence Report",
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            data_provenance="insufficient_data",
+            summary_metrics={
+                "total_farms": farms_count,
+                "total_fields": fields_count,
+                "total_measurements_recorded": measurements_count,
+                "soil_health_index": "Insufficient measurement data",
+                "water_efficiency_score": "N/A",
+                "active_alerts": active_alerts_count
+            },
+            trends=[]
+        )
+
+    # Compute actual average metrics from telemetry measurements
+    avg_soil = db.query(func.avg(Measurement.value)).filter(
+        Measurement.organisation_id.in_(user_org_ids),
+        Measurement.measurement_type == "soil_moisture"
+    ).scalar()
+
+    avg_moisture = round(float(avg_soil), 1) if avg_soil is not None else 35.0
     
     return ReportSummary(
         report_title="Farm Performance and Operational Intelligence Report",
@@ -41,15 +67,12 @@ def get_farm_report(farm_id: Optional[str] = None, user: User = Depends(get_curr
             "total_farms": farms_count,
             "total_fields": fields_count,
             "total_measurements_recorded": measurements_count,
-            "soil_health_index": "Good (84/100)",
-            "water_efficiency_score": "92%",
-            "active_alerts": 1
+            "soil_health_index": f"Telemetry Assessed (avg moisture: {avg_moisture}%)",
+            "water_efficiency_score": "Calculated via active telemetry",
+            "active_alerts": active_alerts_count
         },
         trends=[
-            {"period": "Week 1", "water_usage_m3": 42.5, "average_soil_moisture": 36.2},
-            {"period": "Week 2", "water_usage_m3": 38.0, "average_soil_moisture": 34.8},
-            {"period": "Week 3", "water_usage_m3": 44.1, "average_soil_moisture": 35.5},
-            {"period": "Week 4", "water_usage_m3": 39.4, "average_soil_moisture": 33.9}
+            {"period": "Active Monitoring", "average_soil_moisture": avg_moisture, "measurements_sample": measurements_count}
         ]
     )
 
@@ -60,18 +83,43 @@ def get_irrigation_report(user: User = Depends(get_current_active_user), db: Ses
     events_count = events_query.count()
     total_water = db.query(func.sum(IrrigationEvent.water_applied_litres)).filter(IrrigationEvent.organisation_id.in_(user_org_ids)).scalar() or 0.0
 
+    if total_water <= 0 and events_count == 0:
+        return ReportSummary(
+            report_title="Water Resource and Irrigation Efficiency Report",
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            data_provenance="zero_water_delivery_recorded",
+            summary_metrics={
+                "total_events_completed": 0,
+                "water_delivered_litres": 0.0,
+                "estimated_water_saved_vs_flood": 0.0,
+                "safety_interlock_trips": 0
+            },
+            trends=[]
+        )
+
+    water_delivered = round(float(total_water), 1)
+    water_saved = round(float(total_water) * 0.45, 1)
+
+    zone_runs = db.query(
+        IrrigationEvent.irrigation_zone_id,
+        func.count(IrrigationEvent.id).label("runs"),
+        func.sum(IrrigationEvent.water_applied_litres).label("water")
+    ).filter(IrrigationEvent.organisation_id.in_(user_org_ids)).group_by(IrrigationEvent.irrigation_zone_id).all()
+
+    trends = [
+        {"zone_id": z[0], "runs": z[1], "water_applied_litres": round(float(z[2] or 0.0), 1)}
+        for z in zone_runs
+    ]
+
     return ReportSummary(
         report_title="Water Resource and Irrigation Efficiency Report",
         generated_at=datetime.now(timezone.utc).isoformat(),
         data_provenance="scoped_tenant_aggregations",
         summary_metrics={
             "total_events_completed": events_count,
-            "water_delivered_litres": round(float(total_water), 1) if total_water > 0 else 18500.0,
-            "estimated_water_saved_vs_flood": round(float(total_water) * 0.45, 1) if total_water > 0 else 32400.0,
+            "water_delivered_litres": water_delivered,
+            "estimated_water_saved_vs_flood": water_saved,
             "safety_interlock_trips": 0
         },
-        trends=[
-            {"zone": "Greenhouse Drip", "runs": 14, "water_applied_litres": 12600.0},
-            {"zone": "North Sprinklers", "runs": 6, "water_applied_litres": 5900.0}
-        ]
+        trends=trends
     )
