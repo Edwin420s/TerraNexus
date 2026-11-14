@@ -190,8 +190,7 @@ export class MobileSyncEngine {
           }
         }
       } else {
-        // Fallback for backwards compatibility if results array is absent
-        operations.forEach((o) => settledIds.add(o.operation_id));
+        console.error('Sync push response missing detailed per-operation results array. Retaining outbox operations to prevent silent data loss.');
       }
 
       this.outboxQueue = this.outboxQueue.filter((o) => !settledIds.has(o.operation_id));
