@@ -42,6 +42,12 @@ export const DashboardView: React.FC<{ onNavigate: (route: string) => void }> = 
     }
   };
 
+  const totalHectares = fields.reduce((acc, f) => acc + (Number(f.area_hectares) || 0), 0);
+  const onlineDevices = devices.filter(d => d.connection_status === 'online');
+  const avgBattery = devices.length > 0 && devices.some(d => d.battery_level_pct != null)
+    ? (devices.reduce((acc, d) => acc + (Number(d.battery_level_pct) || 0), 0) / Math.max(1, devices.filter(d => d.battery_level_pct != null).length)).toFixed(0)
+    : null;
+
   return (
     <div className="space-y-6">
       {/* Top Banner / Welcome */}
@@ -55,7 +61,7 @@ export const DashboardView: React.FC<{ onNavigate: (route: string) => void }> = 
               PostgreSQL + PostGIS Connected
             </span>
           </div>
-          <h1 className="text-2xl font-bold">GreenValley Demonstration Farm</h1>
+          <h1 className="text-2xl font-bold">{farms.length > 0 ? farms[0].name : "Farm Operations Dashboard"}</h1>
           <p className="text-emerald-100 text-sm mt-1">
             Open Agricultural Intelligence & Operations Platform • ESP32 Hardware Interlocked
           </p>
@@ -83,8 +89,8 @@ export const DashboardView: React.FC<{ onNavigate: (route: string) => void }> = 
           <div className="flex justify-between items-start">
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Monitored Fields</p>
-              <h3 className="text-2xl font-bold text-slate-900 mt-1">{fields.length || 2} Plots</h3>
-              <p className="text-xs text-emerald-600 font-medium mt-1">14.5 Total Hectares</p>
+              <h3 className="text-2xl font-bold text-slate-900 mt-1">{fields.length} {fields.length === 1 ? 'Plot' : 'Plots'}</h3>
+              <p className="text-xs text-emerald-600 font-medium mt-1">{totalHectares > 0 ? `${totalHectares.toFixed(1)} Total Hectares` : 'No registered area'}</p>
             </div>
             <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
               <Sprout className="w-6 h-6" />
@@ -96,8 +102,14 @@ export const DashboardView: React.FC<{ onNavigate: (route: string) => void }> = 
           <div className="flex justify-between items-start">
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Average Soil Moisture</p>
-              <h3 className="text-2xl font-bold text-slate-900 mt-1">31.4%</h3>
-              <p className="text-xs text-amber-600 font-medium mt-1">Approaching MAD threshold (25%)</p>
+              <h3 className="text-2xl font-bold text-slate-900 mt-1">
+                {devices.length > 0 && devices[0].telemetry_snapshot?.soil_moisture != null
+                  ? `${devices[0].telemetry_snapshot.soil_moisture}%`
+                  : (devices.length > 0 ? 'Telemetry Active' : 'No sensor data')}
+              </h3>
+              <p className="text-xs text-slate-500 font-medium mt-1">
+                {devices.length > 0 ? 'Live in-situ probe readings' : 'Awaiting sensor ingestion'}
+              </p>
             </div>
             <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
               <Droplets className="w-6 h-6" />
@@ -109,8 +121,14 @@ export const DashboardView: React.FC<{ onNavigate: (route: string) => void }> = 
           <div className="flex justify-between items-start">
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Hardware Nodes</p>
-              <h3 className="text-2xl font-bold text-slate-900 mt-1">{devices.length || 1} ESP32 Online</h3>
-              <p className="text-xs text-emerald-600 font-medium mt-1">Battery 94% • MQTT Connected</p>
+              <h3 className="text-2xl font-bold text-slate-900 mt-1">
+                {onlineDevices.length > 0 ? `${onlineDevices.length} Online` : (devices.length > 0 ? `${devices.length} Offline` : '0 Devices')}
+              </h3>
+              <p className="text-xs text-slate-500 font-medium mt-1">
+                {devices.length > 0
+                  ? `${avgBattery ? `Avg Battery ${avgBattery}% • ` : ''}${onlineDevices.length > 0 ? 'MQTT Connected' : 'Disconnected'}`
+                  : 'No hardware registered'}
+              </p>
             </div>
             <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
               <ShieldCheck className="w-6 h-6" />
@@ -122,10 +140,14 @@ export const DashboardView: React.FC<{ onNavigate: (route: string) => void }> = 
           <div className="flex justify-between items-start">
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Active Alerts</p>
-              <h3 className="text-2xl font-bold text-slate-900 mt-1">{alerts.length || 1} Alert</h3>
-              <p className="text-xs text-red-600 font-medium mt-1">Requires Operator Attention</p>
+              <h3 className="text-2xl font-bold text-slate-900 mt-1">
+                {alerts.length} {alerts.length === 1 ? 'Alert' : 'Alerts'}
+              </h3>
+              <p className={`text-xs font-medium mt-1 ${alerts.length > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                {alerts.length > 0 ? 'Requires Operator Attention' : 'All systems nominal'}
+              </p>
             </div>
-            <div className="p-3 bg-red-50 text-red-600 rounded-xl">
+            <div className={`p-3 rounded-xl ${alerts.length > 0 ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'}`}>
               <AlertTriangle className="w-6 h-6" />
             </div>
           </div>
