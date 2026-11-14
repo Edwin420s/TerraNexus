@@ -87,7 +87,15 @@ async def ingest_telemetry(
     raw_bearer = authorization[7:] if authorization and authorization.startswith("Bearer ") else authorization
     provided_token = x_device_token or raw_bearer
 
-    if not expected_token or provided_token != expected_token:
+    is_authenticated = False
+    if expected_token and (provided_token == expected_token):
+        is_authenticated = True
+    elif raw_bearer:
+        token_payload = decode_access_token(raw_bearer)
+        if token_payload and (token_payload.get("org") == device.organisation_id or token_payload.get("sub")):
+            is_authenticated = True
+
+    if not is_authenticated:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing device authentication token"
@@ -201,7 +209,15 @@ def ingest_heartbeat(
     raw_bearer = authorization[7:] if authorization and authorization.startswith("Bearer ") else authorization
     provided_token = x_device_token or raw_bearer
 
-    if not expected_token or provided_token != expected_token:
+    is_authenticated = False
+    if expected_token and (provided_token == expected_token):
+        is_authenticated = True
+    elif raw_bearer:
+        token_payload = decode_access_token(raw_bearer)
+        if token_payload and (token_payload.get("org") == device.organisation_id or token_payload.get("sub")):
+            is_authenticated = True
+
+    if not is_authenticated:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid device credentials")
 
     now = datetime.now(timezone.utc)
