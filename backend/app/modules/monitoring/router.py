@@ -56,24 +56,6 @@ def list_alerts(status: Optional[str] = None, user: User = Depends(get_current_a
     if status:
         query = query.filter(Alert.status == status)
     alerts = query.order_by(Alert.triggered_at.desc()).all()
-    
-    # If empty, return a realistic alert for dashboard/monitoring demonstration
-    if not alerts:
-        return [
-            AlertResponse(
-                id="demo-alert-001",
-                farm_id="c0000000-0000-0000-0000-000000000001",
-                field_id="d0000000-0000-0000-0000-000000000002",
-                title="Low Soil Moisture - Greenhouse Tomatoes",
-                message="Volumetric soil water content in Zone Z-GH1 is 28.5% (Threshold < 30.0%)",
-                severity="warning",
-                status="active",
-                triggered_at=datetime.now(timezone.utc).isoformat(),
-                acknowledged_at=None,
-                resolved_at=None
-            )
-        ]
-
     return [
         AlertResponse(
             id=a.id,
@@ -94,7 +76,7 @@ def acknowledge_alert(alert_id: str, user: User = Depends(get_current_active_use
     user_org_ids = get_user_organisation_ids(user, db)
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
-        return {"status": "ok", "message": "Demo alert acknowledged"}
+        raise HTTPException(status_code=404, detail="Alert not found")
     if alert.organisation_id not in user_org_ids:
         raise HTTPException(status_code=403, detail="Unauthorized to acknowledge alert from another organisation")
     alert.status = "acknowledged"
@@ -108,7 +90,7 @@ def resolve_alert(alert_id: str, notes: Optional[str] = "Resolved by operator", 
     user_org_ids = get_user_organisation_ids(user, db)
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
-        return {"status": "ok", "message": "Demo alert resolved"}
+        raise HTTPException(status_code=404, detail="Alert not found")
     if alert.organisation_id not in user_org_ids:
         raise HTTPException(status_code=403, detail="Unauthorized to resolve alert from another organisation")
     alert.status = "resolved"
