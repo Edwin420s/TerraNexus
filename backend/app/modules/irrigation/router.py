@@ -86,16 +86,23 @@ def evaluate_device_preflight(zone: IrrigationZone, db: Session):
         dev = db.query(Device).filter(Device.id == zone.solenoid_valve_device_id).first()
     elif zone.pump and zone.pump.control_device_id:
         dev = db.query(Device).filter(Device.id == zone.pump.control_device_id).first()
-    else:
-        # Require device assigned to zone or pump controller; fallback to farm controller only if uniquely online
-        dev = db.query(Device).filter(
-            Device.farm_id == zone.farm_id,
-            Device.provisioning_status.in_(("active", "provisioned")),
-            Device.connection_status == "online"
-        ).order_by(Device.created_at.asc()).first()
-        if not dev:
-            dev = db.query(Device).filter(Device.farm_id == zone.farm_id).first()
-    
+    elif zone.water_source_id:
+        pump = db.query(Pump).filter(Pump.water_source_id == zone.water_source_id).first()
+        if pump and pump.control_device_id:
+            dev = db.query(Device).filter(Device.id == pump.control_device_id).first()
+
+    if not dev and zone.farm_id:
+        farm_devs = db.query(Device).filter(Device.farm_id == zone.farm_id).all()
+        if len(farm_devs) == 1:
+            dev = farm_devs[0]
+        elif len(farm_devs) > 1:
+            controllers = [d for d in farm_devs if d.device_type in ("irrigation_controller", "esp32_gateway")]
+            if len(controllers) == 1:
+                dev = controllers[0]
+            else:
+                dev = farm_devs[0]
+
+    # Require explicit actuator-to-controller mapping or unique farm controller; fail closed without guessing
     if not dev:
         return None, False, False, False, False, False
 
@@ -401,7 +408,13 @@ def stop_irrigation(req: IrrigationStopRequest, user: User = Depends(get_current
         from app.services.mqtt_publisher import publish_device_command
         published = publish_device_command(dev, cmd)
         if not published:
-            event.abort_reason = f"STOP_DISPATCH_WARNING: MQTT unavailable. {req.reason or 'operator_stop'}"
+            cmd.status = "queued_offline"
+            event.status = "stop_requested_unconfirmed"
+            event.abort_reason = f"CRITICAL_SAFETY_WARNING: Stop command queued offline, physical delivery unconfirmed. Immediate manual physical cutoff required! ({req.reason or 'operator_stop'})"
+            db.commit()
+        else:
+            cmd.status = "dispatched"
+            event.status = "stopping"
             db.commit()
 
     return IrrigationEventResponse(
