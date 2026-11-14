@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import engine, Base, SessionLocal
@@ -210,12 +211,17 @@ def init_database():
                 last_heartbeat_at=now_time,
                 last_telemetry_at=now_time,
                 config={
-                    "device_token": "tnx_dev_seed_token_node_001",
+                    "device_token": "tnx_secret_device_token_2026",
                     "local_interlock_ready": True,
                     "last_telemetry_sequence": 0
                 }
             )
             db.add(dev)
+            db.flush()
+
+            # Explicitly bind zone and pump actuators to the physical controller node
+            pump.control_device_id = dev.id
+            zone.solenoid_valve_device_id = dev.id
             db.flush()
 
             s1 = Sensor(
@@ -291,7 +297,18 @@ def init_database():
                 framework="rule_based",
                 description="Calculates daily crop water depletion using Penman-Monteith"
             )
-            db.add_all([rule, model])
+            alert = Alert(
+                organisation_id=org.id,
+                farm_id=farm.id,
+                field_id=f2.id,
+                alert_rule_id=rule.id,
+                severity="warning",
+                title="Low Soil Moisture - Greenhouse Tomatoes",
+                message="Volumetric soil water content in Zone Z-GH1 is 28.5% (Threshold < 30.0%)",
+                status="active",
+                triggered_at=now_time
+            )
+            db.add_all([rule, model, alert])
             db.flush()
 
             # 10. Initial Recommendation
@@ -377,6 +394,28 @@ def init_database():
                 requires_human_approval=True
             )
             db.add(payment)
+            db.commit()
+
+        # Ensure seed alert exists
+        if not db.query(Alert).first():
+            org = db.query(Organisation).first()
+            farm = db.query(Farm).first()
+            rule = db.query(AlertRule).first()
+            f2 = farm.fields[0] if farm and farm.fields else None
+            org_id = org.id if org else "a0000000-0000-0000-0000-000000000001"
+            farm_id = farm.id if farm else "c0000000-0000-0000-0000-000000000001"
+            alert = Alert(
+                organisation_id=org_id,
+                farm_id=farm_id,
+                field_id=f2.id if f2 else None,
+                alert_rule_id=rule.id if rule else None,
+                severity="warning",
+                title="Low Soil Moisture - Greenhouse Tomatoes",
+                message="Volumetric soil water content in Zone Z-GH1 is 28.5% (Threshold < 30.0%)",
+                status="active",
+                triggered_at=datetime.now(timezone.utc)
+            )
+            db.add(alert)
             db.commit()
     except Exception as e:
         db.rollback()

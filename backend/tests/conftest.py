@@ -2,8 +2,14 @@ import pytest
 from fastapi.testclient import TestClient
 from app.core.security import create_access_token
 from app.core.database import SessionLocal
+from app.core.init_db import init_database
 from app.models.entities import User, Membership, Device
 from datetime import datetime, timezone
+
+@pytest.fixture(scope="session", autouse=True)
+def initialize_test_database():
+    """Ensure database tables and initial seed fixtures exist for clean CI environments."""
+    init_database()
 
 @pytest.fixture(autouse=True)
 def refresh_online_devices():
@@ -21,7 +27,7 @@ def refresh_online_devices():
             if isinstance(dev.config, dict):
                 dev.config.pop("last_telemetry_sequence", None)
                 dev.config.pop("emergency_stop_active", None)
-                dev.config.setdefault("device_token", "tnx_secret_device_token_2026")
+                dev.config["device_token"] = "tnx_secret_device_token_2026"
                 dev.config["local_interlock_ready"] = True
                 flag_modified(dev, "config")
         db.commit()
