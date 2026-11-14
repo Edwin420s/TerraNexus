@@ -417,8 +417,8 @@ def get_water_efficiency_summary(farm_id: Optional[str] = None, user: User = Dep
     total_water_litres = sum(float(e.water_applied_litres or 0.0) for e in events)
 
     # Calculate metrics with defaults if zero
-    eff_kg_per_l = round(total_yield_kg / max(1.0, total_water_litres), 4) if total_water_litres > 0 else 0.0593
-    l_per_kg = round(total_water_litres / max(1.0, total_yield_kg), 2) if total_yield_kg > 0 else 16.86
+    eff_kg_per_l = round(total_yield_kg / max(1.0, total_water_litres), 4) if (total_water_litres > 0 and total_yield_kg > 0) else 0.0593
+    l_per_kg = round(total_water_litres / max(1.0, total_yield_kg), 2) if (total_yield_kg > 0 and total_water_litres > 0) else 16.86
 
     return {
         "farm_id": farm_id or "all_farms",
