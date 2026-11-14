@@ -154,10 +154,26 @@ def perform_local_agronomic_inference(prompt: str) -> str:
 def health_check():
     current_dir = pathlib.Path(__file__).resolve().parent
     repo_root = current_dir.parent.parent.parent
-    runner_exists = (repo_root / "scripts" / "qvac-infer.mjs").exists()
+    runner_script = repo_root / "scripts" / "qvac-infer.mjs"
+    runner_exists = runner_script.exists()
+    node_modules_qvac = repo_root / "node_modules" / "@qvac" / "sdk"
+    sdk_available = node_modules_qvac.exists()
+    inference_ready = runner_exists and sdk_available
+    model_manifest = {
+        "model_id": MODEL_NAME,
+        "format": "GGUF_Q4_0",
+        "expected_size_bytes": 382218240,
+        "device": "cpu",
+        "ctx_size": 2048,
+        "sdk_package": "@qvac/sdk"
+    }
     return {
         "status": "healthy" if runner_exists else "degraded",
         "service": "qvac_local_inference_server",
+        "runner_available": runner_exists,
+        "sdk_available": sdk_available,
+        "inference_ready": inference_ready,
+        "model_manifest": model_manifest,
         "models": [
             {
                 "id": MODEL_NAME,

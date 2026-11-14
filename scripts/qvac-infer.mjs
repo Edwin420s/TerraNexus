@@ -55,14 +55,15 @@ async function run() {
   let firstTokenMs = 0;
   let tokenCount = 0;
   let fullText = "";
-
-  const runHandle = completion({
-    modelId,
-    history: [{ role: 'user', content: prompt }],
-    stream: true
-  });
+  let durationSec = 0;
 
   try {
+    const runHandle = completion({
+      modelId,
+      history: [{ role: 'user', content: prompt }],
+      stream: true
+    });
+
     for await (const token of runHandle.tokenStream) {
       if (tokenCount === 0) {
         firstTokenMs = performance.now() - tInfer;
@@ -84,29 +85,41 @@ async function run() {
         break;
       }
     }
+    durationSec = (performance.now() - tInfer) / 1000;
   } catch (err) {
     // If cancelled due to budget, ignore cancel error
     if (!err.message?.includes('cancelled')) {
-      try { await unloadModel({ modelId }); } catch (_) {}
       if (jsonOutput) {
         console.log(JSON.stringify({ error: err.message, status: "inference_failed" }));
       } else {
         console.error("FATAL: Inference generation failed:", err.message);
       }
+      try { await unloadModel({ modelId }); } catch (_) {}
       process.exit(1);
     }
+    durationSec = (performance.now() - tInfer) / 1000;
+  } finally {
+    if (modelId) {
+      try {
+        await unloadModel({ modelId });
+      } catch (_) {}
+    }
   }
-
-  const durationSec = (performance.now() - tInfer) / 1000;
-  try {
-    await unloadModel({ modelId });
-  } catch (_) {}
 
   const cleanedText = fullText.includes('</think>') 
     ? fullText.split('</think>')[1].trim()
     : fullText.trim();
 
   const finalResponse = cleanedText.length > 0 ? cleanedText : fullText.trim();
+
+  if (tokenCount === 0 || finalResponse.length === 0) {
+    if (jsonOutput) {
+      console.log(JSON.stringify({ error: "Empty inference response from neural model", status: "empty_output" }));
+    } else {
+      console.error("FATAL: Model produced zero output tokens.");
+    }
+    process.exit(1);
+  }
 
   if (jsonOutput) {
     console.log(JSON.stringify({
