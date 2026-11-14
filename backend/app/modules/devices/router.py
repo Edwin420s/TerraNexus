@@ -11,7 +11,7 @@ from app.services.mqtt_publisher import publish_device_command
 router = APIRouter(prefix="", tags=["devices"])
 
 def check_device_admin_or_operator(user: User, org_id: str, db: Session):
-    if user.email == "admin@terranexus.org":
+    if getattr(user, "is_superuser", False):
         return True
     mem = db.query(Membership).filter(
         Membership.user_id == user.id,
@@ -122,6 +122,10 @@ def register_device(req: DeviceCreateRequest, user: User = Depends(get_current_a
     farm = db.query(Farm).filter(Farm.id == req.farm_id, Farm.organisation_id.in_(user_org_ids)).first()
     if not farm:
         raise HTTPException(status_code=404, detail="Farm not found or unauthorized")
+    check_device_admin_or_operator(user, farm.organisation_id, db)
+
+    import secrets
+    provisioning_token = f"tnx_claim_{secrets.token_urlsafe(32)}"
     
     device = Device(
         organisation_id=farm.organisation_id,
@@ -132,11 +136,12 @@ def register_device(req: DeviceCreateRequest, user: User = Depends(get_current_a
         device_type=req.device_type,
         hardware_version=req.hardware_version,
         firmware_version=req.firmware_version,
-        provisioning_status="active",
-        connection_status="online",
+        provisioning_status="pending",
+        connection_status="offline",
         config={
-            "device_token": "tnx_secret_device_token_2026",
-            "local_interlock_ready": True
+            "provisioning_token": provisioning_token,
+            "local_interlock_ready": False,
+            "hardware_interlock_reported_ready": False
         }
     )
     db.add(device)
@@ -192,11 +197,14 @@ def provision_device(device_id: str, user: User = Depends(get_current_active_use
     
     # Generate unique cryptographic device access token & MQTT credentials
     import secrets
+    import hashlib
     device_token = f"tnx_dev_{secrets.token_urlsafe(32)}"
+    device_token_hash = hashlib.sha256(device_token.encode()).hexdigest()
     mqtt_password = f"tnx_mqtt_{secrets.token_urlsafe(24)}"
 
     cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
     cfg["device_token"] = device_token
+    cfg["device_token_hash"] = device_token_hash
     cfg["mqtt_username"] = dev.device_uid
     cfg["mqtt_password"] = mqtt_password
     dev.config = cfg
@@ -342,14 +350,36 @@ def dispatch_command(device_id: str, req: CommandCreateRequest, user: User = Dep
     if dev.provisioning_status != "active":
         raise HTTPException(status_code=400, detail="Device is not active or provisioned")
     
+    cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
+    now = datetime.now(timezone.utc)
+
+    # Physical Actuation Preflight Interlock: close the generic command bypass
+    if req.command_type.lower() in ("turn_on", "pump_on", "relay_on", "irrigate", "valve_open", "start"):
+        if cfg.get("emergency_stop_active", False):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Actuation safety violation: Emergency stop is actively latched on device"
+            )
+        last_seen = dev.last_heartbeat_at or dev.last_telemetry_at
+        if last_seen and last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        if not last_seen or (now - last_seen).total_seconds() > 120:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Actuation safety violation: Device has no recent heartbeat within 120s window"
+            )
+        if not cfg.get("local_interlock_ready", False) and not cfg.get("hardware_interlock_reported_ready", False):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Actuation safety violation: Hardware interlock is not reported ready by device"
+            )
+
     # Cap max execution duration
     max_duration = min(req.max_execution_duration_sec or 1800, 3600)
-    now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=max_duration + 60)
 
     # Monotonic command sequence
     current_seq = getattr(dev, "last_command_sequence", 0) or 0
-    cfg = dict(dev.config) if isinstance(dev.config, dict) else {}
     current_seq = max(current_seq, cfg.get("last_command_sequence", 0)) + 1
     dev.last_command_sequence = current_seq
     cfg["last_command_sequence"] = current_seq
@@ -373,8 +403,12 @@ def dispatch_command(device_id: str, req: CommandCreateRequest, user: User = Dep
     db.commit()
     db.refresh(cmd)
 
-    # Dispatch to hardware over MQTT
-    publish_device_command(dev, cmd)
+    # Dispatch to hardware over MQTT; record offline queue state if broker is unavailable
+    published = publish_device_command(dev, cmd)
+    if not published:
+        cmd.status = "queued_offline"
+        db.commit()
+        db.refresh(cmd)
     return CommandResponse(
         id=cmd.id,
         device_id=cmd.device_id,
@@ -415,6 +449,7 @@ def acknowledge_command(
         if payload and "sub" in payload:
             caller = db.query(User).filter(User.id == payload["sub"]).first()
             if caller:
+                check_device_admin_or_operator(caller, cmd.organisation_id, db)
                 is_authenticated = True
     
     if not is_authenticated:

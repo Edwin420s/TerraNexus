@@ -149,6 +149,11 @@ def test_tc_dev_004_telemetry_deduplication_range_validation_and_no_fabricated_d
     })
     device_id = dev_resp.json()["id"]
 
+    # Provision device to activate and generate secure device token
+    prov_resp = client.post(f"/api/v1/devices/{device_id}/provision")
+    assert prov_resp.status_code == 200
+    token = prov_resp.json()["device_token"]
+
     # 1. Verify empty measurements returns [] instead of fabricated demo points
     empty_resp = client.get(f"/api/v1/measurements?device_id={device_id}")
     assert empty_resp.status_code == 200
@@ -166,7 +171,7 @@ def test_tc_dev_004_telemetry_deduplication_range_validation_and_no_fabricated_d
             {"type": "soil_moisture", "value": 250.0, "unit": "%"} # Invalid physical value
         ]
     }
-    first_resp = client.post("/api/v1/telemetry", json=t_payload)
+    first_resp = client.post("/api/v1/telemetry", json=t_payload, headers={"X-Device-Token": token})
     assert first_resp.status_code == 202
     assert first_resp.json()["status"] == "persisted_and_processed"
 
@@ -178,7 +183,7 @@ def test_tc_dev_004_telemetry_deduplication_range_validation_and_no_fabricated_d
     assert m_list[0]["quality_score"] == 0.0
 
     # 3. Duplicate event_id ingestion must be deduplicated
-    dup_resp = client.post("/api/v1/telemetry", json=t_payload)
+    dup_resp = client.post("/api/v1/telemetry", json=t_payload, headers={"X-Device-Token": token})
     assert dup_resp.status_code == 202
     assert dup_resp.json()["status"] == "already_ingested_duplicate"
 
