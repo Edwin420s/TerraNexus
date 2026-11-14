@@ -97,7 +97,7 @@ def test_tc_agro_004_api_endpoint_assessment():
     assert data["raw_mm"] > 0
 
 def test_tc_agro_005_fallback_flagging():
-    """Verify unknown crop or soil texture is explicitly flagged as fallback applied."""
+    """Verify unknown crop or soil texture is explicitly flagged as fallback applied and recommendation safely halted."""
     req = AgronomicAssessmentRequest(
         crop="unknown_exotic_crop",
         growth_stage="blooming",
@@ -106,6 +106,8 @@ def test_tc_agro_005_fallback_flagging():
     )
     result = calculate_dynamic_fao56(req)
     assert result.fallback_applied is True
+    assert result.status_label in ("UNSUPPORTED_CROP", "UNSUPPORTED_SOIL_TEXTURE")
+    assert result.irrigation_needed is False
     assert len(result.warnings) >= 2
     assert any("moon_dust" in w for w in result.warnings)
     assert any("unknown_exotic_crop" in w for w in result.warnings)

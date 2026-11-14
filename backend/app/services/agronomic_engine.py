@@ -131,6 +131,7 @@ class SoilSensorDepthReading(BaseModel):
     depth_cm: float
     moisture_pct: float
     weight: Optional[float] = None
+    sensor_type: Optional[str] = "calibrated_vwc"  # "calibrated_vwc" or "capacitive_raw"
 
 class AgronomicAssessmentRequest(BaseModel):
     crop: str = "tomato"
@@ -138,6 +139,7 @@ class AgronomicAssessmentRequest(BaseModel):
     soil_texture: str = "clay_loam"
     soil_readings: Optional[List[SoilSensorDepthReading]] = None
     single_moisture_pct: Optional[float] = None
+    sensor_reading_type: Optional[str] = "calibrated_vwc"  # "calibrated_vwc" or "capacitive_raw"
     et0_mm_day: Optional[float] = 4.5
     field_area_m2: Optional[float] = 1000.0  # 0.1 hectare default
     irrigation_efficiency: Optional[float] = 0.90  # Drip irrigation efficiency
@@ -176,23 +178,76 @@ def calculate_dynamic_fao56(req: AgronomicAssessmentRequest) -> AgronomicAssessm
     fallback_applied = False
     synthetic_moisture_used = False
 
+    # Check capacitive vs calibrated VWC warnings
+    if req.sensor_reading_type == "capacitive_raw" or (
+        req.soil_readings and any(r.sensor_type == "capacitive_raw" for r in req.soil_readings)
+    ):
+        warnings.append("Capacitive raw sensor reading detected without soil-specific calibration curve; reading may exhibit up to ±15% VWC error.")
+
     # 1. Resolve soil profile
     soil_key = req.soil_texture.lower().replace(" ", "_")
+    crop_key = req.crop.lower()
+
     if soil_key not in SOIL_TEXTURE_PROFILES:
-        warnings.append(f"Unrecognized soil texture '{req.soil_texture}'; defaulting to 'clay_loam'.")
-        fallback_applied = True
-        soil = SOIL_TEXTURE_PROFILES["clay_loam"]
-    else:
-        soil = SOIL_TEXTURE_PROFILES[soil_key]
+        warnings.append(f"Unrecognized soil texture '{req.soil_texture}'. Cannot safely compute hydraulic water retention continuum.")
+        if crop_key not in CROP_PHENOLOGY_PROFILES:
+            warnings.append(f"Unrecognized crop '{req.crop}'. Phenological growth stages are undefined.")
+        return AgronomicAssessmentResult(
+            crop_name=req.crop,
+            growth_stage=req.growth_stage,
+            soil_texture_name=req.soil_texture,
+            pwp_pct=0.0,
+            fc_pct=0.0,
+            taw_mm=0.0,
+            raw_mm=0.0,
+            current_depletion_mm=0.0,
+            depletion_fraction_pct=0.0,
+            mad_threshold_pct=0.0,
+            water_stress_ks=1.0,
+            etc_mm_day=0.0,
+            irrigation_needed=False,
+            status_label="UNSUPPORTED_SOIL_TEXTURE",
+            net_irrigation_requirement_mm=0.0,
+            gross_water_volume_litres=0.0,
+            recommended_duration_minutes=0,
+            explainable_reasoning=f"Irrigation recommendation halted: soil texture '{req.soil_texture}' is unsupported. Hydraulic boundaries cannot be safely determined.",
+            execution_mode="rule_based_fao56",
+            fallback_applied=True,
+            synthetic_moisture_used=False,
+            data_provenance="unsupported_soil_profile",
+            warnings=warnings
+        )
+    soil = SOIL_TEXTURE_PROFILES[soil_key]
     
     # 2. Resolve crop phenology
-    crop_key = req.crop.lower()
     if crop_key not in CROP_PHENOLOGY_PROFILES:
-        warnings.append(f"Unrecognized crop '{req.crop}'; defaulting to 'tomato'.")
-        fallback_applied = True
-        crop_profile = CROP_PHENOLOGY_PROFILES["tomato"]
-    else:
-        crop_profile = CROP_PHENOLOGY_PROFILES[crop_key]
+        warnings.append(f"Unrecognized crop '{req.crop}'. Phenological growth stages and dual crop coefficients are undefined.")
+        return AgronomicAssessmentResult(
+            crop_name=req.crop,
+            growth_stage=req.growth_stage,
+            soil_texture_name=soil["name"],
+            pwp_pct=soil["pwp_pct"],
+            fc_pct=soil["fc_pct"],
+            taw_mm=0.0,
+            raw_mm=0.0,
+            current_depletion_mm=0.0,
+            depletion_fraction_pct=0.0,
+            mad_threshold_pct=0.0,
+            water_stress_ks=1.0,
+            etc_mm_day=0.0,
+            irrigation_needed=False,
+            status_label="UNSUPPORTED_CROP",
+            net_irrigation_requirement_mm=0.0,
+            gross_water_volume_litres=0.0,
+            recommended_duration_minutes=0,
+            explainable_reasoning=f"Irrigation recommendation halted: crop profile '{req.crop}' is unsupported. Phenological Kc and root boundaries cannot be safely determined.",
+            execution_mode="rule_based_fao56",
+            fallback_applied=True,
+            synthetic_moisture_used=False,
+            data_provenance="unsupported_crop_phenology",
+            warnings=warnings
+        )
+    crop_profile = CROP_PHENOLOGY_PROFILES[crop_key]
 
     stage_key = req.growth_stage.lower()
     if stage_key not in crop_profile["stages"]:
