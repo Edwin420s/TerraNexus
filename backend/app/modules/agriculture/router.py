@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id
+from app.core.auth import get_current_active_user, get_user_organisation_ids, get_current_user_organisation_id, require_admin
 from app.models.entities import User, Crop, CropVariety, GrowingSeason, FieldCrop, Farm, Field
 
 router = APIRouter(prefix="", tags=["agriculture"])
@@ -79,7 +79,7 @@ def list_crops(user: User = Depends(get_current_active_user), db: Session = Depe
     ]
 
 @router.post("/crops", response_model=CropResponse)
-def create_crop(req: CropCreateRequest, user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+def create_crop(req: CropCreateRequest, user: User = Depends(require_admin), db: Session = Depends(get_db)):
     crop = Crop(
         common_name=req.common_name,
         scientific_name=req.scientific_name,

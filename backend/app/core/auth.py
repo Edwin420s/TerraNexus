@@ -79,9 +79,7 @@ def require_role(allowed_roles: List[str], organisation_id: Optional[str] = None
 
         has_permission = any(
             m.role == "owner" or m.role in allowed_roles for m in memberships
-        ) or (
-            current_user.email == "admin@terranexus.org" and any(r in ("admin", "superadmin", "platform_admin") for r in allowed_roles)
-        )
+        ) or getattr(current_user, "is_superuser", False)
         if not has_permission:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -100,8 +98,8 @@ def require_admin(
         Membership.status == "active"
     )
     memberships = query.all()
-    is_admin = any(m.role in ("owner", "admin", "superadmin", "platform_admin") for m in memberships) or (
-        current_user.email == "admin@terranexus.org"
+    is_admin = any(m.role in ("owner", "admin", "superadmin", "platform_admin") for m in memberships) or getattr(
+        current_user, "is_superuser", False
     )
     if not is_admin:
         raise HTTPException(
