@@ -1,15 +1,18 @@
 # TerraNexus — Formal QA Execution & Sign-Off Report
 
 **Document Reference**: TNX-QA-SIGNOFF-001  
-**Version**: 1.0.0  
+**Version**: 1.1.0  
 **Quality Engineering Lead**: Senior Principal QA Engineer  
-**Sign-Off Status**: **APPROVED FOR PRODUCTION RELEASE**  
+**Sign-Off Status**: **CONDITIONAL CANDIDATE — PENDING FIELD HARDWARE & ON-FARM DEPLOYMENT**  
 
 ---
 
 ## 1. Quality Assurance Summary & Metrics
 
-The comprehensive Quality Assurance campaign for TerraNexus has concluded with **100% of acceptance criteria met or exceeded**.
+The comprehensive Quality Assurance campaign for TerraNexus has validated all code-level invariants, contract requirements, and automated failure modes with **100% of automated test suites passing**.
+
+> [!NOTE] Test Execution Scope & Boundary Disclosure
+> All 133 tests documented below represent automated CI unit, integration, software-in-the-loop (SIL), and simulated hardware-in-the-loop (HIL) verifications. Physical on-farm deployment with live high-voltage AC pump contactors, 24V solenoid manifolds, and real in-situ soil capacitance probes in Kirinyaga County is scheduled as Phase 2 Field Acceptance Testing. Production release remains conditional upon field silicon and physical Wi-Fi-off hardware run sign-offs.
 
 | Category | Total Executed | Passed | Failed | Skipped | Pass Rate |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -77,6 +80,6 @@ The independent physical safety boundary was exhaustively validated:
 ## 6. Formal QA Sign-Off
 
 > **QA CERTIFICATION**:  
-> I hereby certify that the TerraNexus platform has been subjected to rigorous end-to-end quality assurance, functional testing, physical safety verification, security penetration assessment, offline sync validation, and performance load profiling.  
+> I hereby certify that the TerraNexus platform codebase has satisfied automated end-to-end quality assurance, functional contract testing, fail-closed physical safety verification, security penetration assessment, offline sync validation, and performance load profiling.  
 > 
-> The platform satisfies all quality requirements defined in `TNX-ARCH-001`, `TNX-DATA-001`, `TNX-SYNC-001`, and `TNX-UI-001`. It is certified as **STABLE, SAFE, RESILIENT, AND READY FOR PRODUCTION OPERATION**.
+> The platform satisfies software engineering requirements defined in `TNX-ARCH-001`, `TNX-DATA-001`, `TNX-SYNC-001`, and `TNX-UI-001`. It is certified as a **CONDITIONAL CANDIDATE — PENDING FIELD HARDWARE & ON-FARM DEPLOYMENT ACCEPTANCE**. Physical field commissioning with active pumps, high-pressure drip lines, and standalone edge silicon will formally transition the release to full production status upon completion.
